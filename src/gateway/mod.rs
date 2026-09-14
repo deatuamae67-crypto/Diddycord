@@ -5,6 +5,7 @@ use tokio::{
     time::sleep,
 };
 
+mod bulk;
 mod connection;
 mod events;
 mod protocol;
