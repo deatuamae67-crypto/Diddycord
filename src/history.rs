@@ -190,7 +190,8 @@ mod tests {
     use super::*;
 
     fn rest() -> RestHandle {
-        let (handle, _worker) = RestDispatcher::new("test-token", 8, 8).unwrap();
+        let (handle, worker) = RestDispatcher::new("test-token", 8, 8).unwrap();
+        std::mem::forget(worker);
         handle
     }
 
