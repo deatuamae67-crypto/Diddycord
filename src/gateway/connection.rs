@@ -6,7 +6,7 @@ use tokio_tungstenite::{
 };
 
 use super::{
-    events::{emit, emit_message},
+    events::{emit, emit_message_create, emit_message_delete, emit_message_update},
     protocol::{
         receive_hello, send_heartbeat, send_identify, send_resume, GatewayEnvelope, ReadyData,
     },
@@ -140,7 +140,21 @@ impl NetworkBackbone {
                                 Some("MESSAGE_CREATE") => {
                                     if self.frontend.receiver_count() != 0 {
                                         if let Some(raw) = envelope.d {
-                                            emit_message(&self.frontend, raw);
+                                            emit_message_create(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("MESSAGE_UPDATE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_message_update(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("MESSAGE_DELETE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_message_delete(&self.frontend, raw);
                                         }
                                     }
                                 }

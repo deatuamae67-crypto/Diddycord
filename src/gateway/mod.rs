@@ -7,7 +7,9 @@ mod events;
 mod protocol;
 mod recovery;
 
-pub use events::{FrontendEvent, FrontendMessage};
+pub use events::{
+    FrontendEvent, FrontendMessage, FrontendMessageDelete, FrontendMessageUpdate,
+};
 use recovery::{reconnect_delay, AuthMode, ConnectionNext, SessionState};
 
 pub(super) const GATEWAY_VERSION: u8 = 9;
