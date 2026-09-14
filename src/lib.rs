@@ -15,9 +15,7 @@ pub use rest::{
 };
 pub use runtime::{build_runtime, recommended_worker_threads};
 pub use state::{DrainReport, FrontendState};
-pub use topology::{
-    GuildRef, TopologyState, DEFAULT_MAX_CHANNELS_PER_GUILD, DEFAULT_MAX_GUILDS,
-};
+pub use topology::{GuildRef, TopologyState, DEFAULT_MAX_CHANNELS_PER_GUILD, DEFAULT_MAX_GUILDS};
 
 pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
