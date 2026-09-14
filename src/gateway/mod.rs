@@ -13,7 +13,10 @@ mod identity;
 mod protocol;
 mod recovery;
 
-pub use direct::{FrontendDirectChannel, FrontendDirectChannelDelete};
+pub use direct::{
+    DirectDrainReport, DirectTopologyState, FrontendDirectChannel, FrontendDirectChannelDelete,
+    DEFAULT_MAX_DIRECT_CHANNELS,
+};
 pub use events::{
     FrontendChannel, FrontendChannelChange, FrontendChannelDelete, FrontendEvent,
     FrontendGuildDelete, FrontendGuildSnapshot, FrontendGuildUpdate, FrontendMessage,
