@@ -1,0 +1,23 @@
+[package]
+name = "diddycord"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+description = "Ultra-low-overhead cross-platform Discord Gateway client core"
+
+[dependencies]
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+rustls = { version = "0.23.44", default-features = false, features = ["ring", "std"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0.151", default-features = false, features = ["raw_value", "std"] }
+tokio = { version = "~1.47.0", default-features = false, features = ["net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "=0.28.0", default-features = false, features = ["connect", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+incremental = false
