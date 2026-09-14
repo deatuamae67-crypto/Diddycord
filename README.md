@@ -36,6 +36,14 @@ The project is intentionally split into small, bounded layers so networking neve
 - Bounded response-body reads and selective JSON parsing.
 - Ambiguous transport failures are not automatically retried, avoiding accidental duplicate message POSTs.
 
+### Chapter 5 — REST/Gateway state convergence
+
+- Successful REST send/edit/delete results can be drained directly into `FrontendState` without blocking the renderer.
+- Message creation is an upsert by Discord message ID inside the bounded channel timeline.
+- A REST send result and its later Gateway `MESSAGE_CREATE` echo therefore converge to one cached message instead of producing duplicates.
+- REST lag and Gateway lag are accounted separately.
+- Failed REST operations do not mutate presentation state, avoiding rollback bookkeeping.
+
 ## Authentication
 
 The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
@@ -87,7 +95,7 @@ let mut gateway_events = backbone.subscribe();
 let mut state = FrontendState::new(64, 128);
 
 // Once per frame/tick:
-let report = state.drain(&mut gateway_events, 64);
+let gateway_report = state.drain(&mut gateway_events, 64);
 ```
 
 REST send/edit/delete path:
@@ -98,6 +106,9 @@ runtime.spawn(worker.run());
 let mut rest_events = rest.subscribe();
 
 let request_id = rest.try_send_message(channel_id, "hello")?;
+
+// Also once per frame/tick. Successful results converge with Gateway echoes.
+let rest_report = state.drain_rest(&mut rest_events, 32);
 ```
 
 Both transports are bounded: a slow frontend cannot block Gateway heartbeats or create an unbounded outbound queue.
@@ -110,7 +121,7 @@ src/lib.rs        public library surface
 src/gateway/      Discord Gateway transport, parser, heartbeat and reconnect logic
 src/rest.rs       bounded outbound Discord REST actor
 src/runtime.rs    low-overhead Tokio runtime configuration
-src/state.rs      bounded synchronous presentation cache
+src/state.rs      bounded synchronous presentation cache and REST/Gateway convergence
 docs/             architecture notes by chapter
 ```
 
