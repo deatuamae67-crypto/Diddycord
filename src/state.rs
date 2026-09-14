@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{HashMap, VecDeque},
     sync::Arc,
 };
@@ -7,7 +8,7 @@ use tokio::sync::broadcast::{self, error::TryRecvError};
 
 use crate::{
     topology::TopologyState, FrontendEvent, FrontendMessage, FrontendMessageDelete,
-    FrontendMessageUpdate, RestEvent,
+    FrontendMessageUpdate, RestEvent, RestMessage,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -251,6 +252,11 @@ impl FrontendState {
                     },
                 )));
             }
+            RestEvent::MessagesFetched {
+                channel_id,
+                messages,
+                ..
+            } => self.apply_history(channel_id.as_ref(), messages),
             RestEvent::Failed { .. } => {}
         }
     }
@@ -312,6 +318,76 @@ impl FrontendState {
         report
     }
 
+    fn apply_history(&mut self, channel_id: &str, messages: &[RestMessage]) {
+        if !messages.iter().any(|message| {
+            message.channel_id.as_ref() == channel_id && message.author_username.is_some()
+        }) {
+            return;
+        }
+
+        self.clock = self.clock.saturating_add(1);
+        let touched = self.clock;
+        let max_messages = self.max_messages_per_channel;
+
+        if !self.channels.contains_key(channel_id) {
+            if self.channels.len() >= self.max_channels {
+                self.evict_least_recently_used_channel();
+            }
+            self.channels
+                .insert(Box::<str>::from(channel_id), ChannelTimeline::new(touched));
+        }
+
+        let timeline = self
+            .channels
+            .get_mut(channel_id)
+            .expect("channel timeline was inserted before history merge");
+        timeline.touched = touched;
+
+        for message in messages {
+            if message.channel_id.as_ref() != channel_id {
+                continue;
+            }
+            let Some(author_username) = message.author_username.as_ref() else {
+                continue;
+            };
+
+            if timeline.messages.iter().any(|cached| {
+                frontend_message(cached)
+                    .map(|existing| existing.id.as_ref() == message.id.as_ref())
+                    .unwrap_or(false)
+            }) {
+                continue;
+            }
+
+            let insert_at = timeline
+                .messages
+                .iter()
+                .position(|cached| {
+                    frontend_message(cached)
+                        .map(|existing| {
+                            snowflake_cmp(message.id.as_ref(), existing.id.as_ref())
+                                == Ordering::Less
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(timeline.messages.len());
+
+            timeline.messages.insert(
+                insert_at,
+                Arc::new(FrontendEvent::Message(FrontendMessage {
+                    id: message.id.clone(),
+                    channel_id: message.channel_id.clone(),
+                    author_username: author_username.clone(),
+                    content: message.content.clone(),
+                })),
+            );
+
+            if timeline.messages.len() > max_messages {
+                timeline.messages.pop_front();
+            }
+        }
+    }
+
     fn evict_least_recently_used_channel(&mut self) {
         let Some(oldest) = self
             .channels
@@ -341,10 +417,17 @@ fn frontend_message(event: &Arc<FrontendEvent>) -> Option<&FrontendMessage> {
     }
 }
 
+fn snowflake_cmp(left: &str, right: &str) -> Ordering {
+    match left.len().cmp(&right.len()) {
+        Ordering::Equal => left.cmp(right),
+        ordering => ordering,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FrontendGuildSnapshot, RestMessage, RestOperation};
+    use crate::{FrontendGuildSnapshot, RestOperation};
 
     fn message(id: &str, channel_id: &str, content: &str) -> Arc<FrontendEvent> {
         Arc::new(FrontendEvent::Message(FrontendMessage {
@@ -537,11 +620,69 @@ mod tests {
     }
 
     #[test]
+    fn history_bootstrap_merges_older_messages_in_snowflake_order() {
+        let mut state = FrontendState::new(4, 8);
+        state.apply(message("200", "22", "live"));
+        state.apply_rest(&RestEvent::MessagesFetched {
+            request_id: 10,
+            channel_id: Box::<str>::from("22"),
+            messages: vec![
+                rest_message("190", "22", "newer history"),
+                rest_message("180", "22", "older history"),
+            ],
+        });
+
+        let ids: Vec<&str> = state
+            .messages("22")
+            .map(|message| message.id.as_ref())
+            .collect();
+        assert_eq!(ids, vec!["180", "190", "200"]);
+    }
+
+    #[test]
+    fn history_bootstrap_never_overwrites_a_live_cached_copy() {
+        let mut state = FrontendState::new(4, 8);
+        state.apply(message("190", "22", "edited live copy"));
+        state.apply_rest(&RestEvent::MessagesFetched {
+            request_id: 11,
+            channel_id: Box::<str>::from("22"),
+            messages: vec![rest_message("190", "22", "stale history copy")],
+        });
+
+        assert_eq!(state.channel_message_count("22"), 1);
+        assert_eq!(
+            state.latest_message("22").unwrap().content.as_ref(),
+            "edited live copy"
+        );
+    }
+
+    #[test]
+    fn history_bootstrap_keeps_the_newest_messages_at_capacity() {
+        let mut state = FrontendState::new(4, 3);
+        state.apply(message("200", "22", "live"));
+        state.apply_rest(&RestEvent::MessagesFetched {
+            request_id: 12,
+            channel_id: Box::<str>::from("22"),
+            messages: vec![
+                rest_message("190", "22", "three"),
+                rest_message("180", "22", "two"),
+                rest_message("170", "22", "one"),
+            ],
+        });
+
+        let ids: Vec<&str> = state
+            .messages("22")
+            .map(|message| message.id.as_ref())
+            .collect();
+        assert_eq!(ids, vec!["180", "190", "200"]);
+    }
+
+    #[test]
     fn failed_rest_operation_does_not_mutate_cache() {
         let mut state = FrontendState::new(4, 8);
         state.apply(message("55", "channel", "keep"));
         state.apply_rest(&RestEvent::Failed {
-            request_id: 10,
+            request_id: 13,
             operation: RestOperation::EditMessage,
             status: Some(500),
             retryable: true,

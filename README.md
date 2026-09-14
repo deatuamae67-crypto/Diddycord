@@ -52,6 +52,15 @@ The project is intentionally split into small, bounded layers so networking neve
 - Default limits are 256 guilds and 512 channels per guild, with configurable limits and drop accounting.
 - Temporary guild unavailability preserves cached topology; a true guild delete removes it.
 
+### Chapter 7 — bounded message-history bootstrap
+
+- `RestHandle::try_fetch_messages()` loads the newest 1–100 messages for a selected channel without blocking the frontend.
+- `RestHandle::try_fetch_messages_before()` provides explicit backward pagination using a validated Discord message snowflake.
+- History responses use a separate hard 2 MiB body ceiling and selective borrowed parsing; embeds, attachments, reactions and unrelated metadata are not retained.
+- Fetched messages merge into the existing bounded channel timeline in Discord snowflake order rather than creating a second history store.
+- Already cached live/Gateway messages win over history snapshots, preventing a late REST response from overwriting a newer edit.
+- Cache capacity still keeps the newest configured messages, so repeated backward pagination cannot grow memory without bound.
+
 ## Authentication
 
 The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
@@ -112,18 +121,24 @@ for guild in state.topology().guilds() {
 }
 ```
 
-REST send/edit/delete path:
+REST action/history path:
 
 ```rust
 let (rest, worker) = RestDispatcher::new(&token, 32, 64)?;
 runtime.spawn(worker.run());
 let mut rest_events = rest.subscribe();
 
-let request_id = rest.try_send_message(channel_id, "hello")?;
+let send_request = rest.try_send_message(channel_id, "hello")?;
+let history_request = rest.try_fetch_messages(channel_id, 50)?;
 
-// Also once per frame/tick. Successful results converge with Gateway echoes.
+// For explicit backward pagination, use the oldest cached message ID.
+let older_request = rest.try_fetch_messages_before(channel_id, oldest_message_id, 50)?;
+
+// Also once per frame/tick. Successful results converge with Gateway state.
 let rest_report = state.drain_rest(&mut rest_events, 32);
 ```
+
+History fetching is deliberately caller-driven: selecting or scrolling a channel can request a page, while idle channels consume no REST bandwidth or history memory beyond the configured presentation cache.
 
 Both transports are bounded: a slow frontend cannot block Gateway heartbeats or create an unbounded outbound queue.
 
@@ -133,9 +148,9 @@ Both transports are bounded: a slow frontend cannot block Gateway heartbeats or 
 src/main.rs       desktop Gateway harness
 src/lib.rs        public library surface
 src/gateway/      Discord Gateway transport, parser, heartbeat and reconnect logic
-src/rest.rs       bounded outbound Discord REST actor
+src/rest.rs       bounded Discord REST actor, outbound actions and message-history reads
 src/runtime.rs    low-overhead Tokio runtime configuration
-src/state.rs      bounded synchronous presentation cache and REST/Gateway convergence
+src/state.rs      bounded synchronous presentation cache and REST/Gateway/history convergence
 src/topology.rs   bounded guild/channel navigation state
 docs/             architecture notes by chapter
 ```

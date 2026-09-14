@@ -24,7 +24,9 @@ const USER_AGENT_VALUE: &str = "Diddycord/0.1 (+https://github.com/deatuamae67-c
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BODY: usize = 256 * 1024;
+const MAX_HISTORY_RESPONSE_BODY: usize = 2 * 1024 * 1024;
 const MAX_MESSAGE_CHARS: usize = 2_000;
+const MAX_HISTORY_MESSAGES: u8 = 100;
 const MAX_RATE_LIMIT_DELAY: Duration = Duration::from_secs(300);
 const MAX_RATE_LIMIT_RETRIES: u8 = 5;
 
@@ -33,6 +35,7 @@ pub enum RestOperation {
     SendMessage,
     EditMessage,
     DeleteMessage,
+    FetchMessages,
 }
 
 #[derive(Debug)]
@@ -57,6 +60,11 @@ pub enum RestEvent {
         request_id: u32,
         channel_id: Box<str>,
         message_id: Box<str>,
+    },
+    MessagesFetched {
+        request_id: u32,
+        channel_id: Box<str>,
+        messages: Vec<RestMessage>,
     },
     Failed {
         request_id: u32,
@@ -95,6 +103,7 @@ impl Error for RestBuildError {
 pub enum RestSubmitError {
     InvalidChannelId,
     InvalidMessageId,
+    InvalidHistoryLimit,
     EmptyContent,
     ContentTooLong,
     QueueFull,
@@ -106,6 +115,7 @@ impl fmt::Display for RestSubmitError {
         let message = match self {
             Self::InvalidChannelId => "channel ID must be a decimal Discord snowflake",
             Self::InvalidMessageId => "message ID must be a decimal Discord snowflake",
+            Self::InvalidHistoryLimit => "history limit must be between 1 and 100 messages",
             Self::EmptyContent => "message content cannot be empty",
             Self::ContentTooLong => "message content exceeds the 2000-character limit",
             Self::QueueFull => "Discord REST command queue is full",
@@ -298,6 +308,13 @@ impl RestDispatcher {
             } => self.client.delete(format!(
                 "{API_BASE}/channels/{channel_id}/messages/{message_id}"
             )),
+            RestCommandKind::FetchMessages {
+                channel_id,
+                before,
+                limit,
+            } => self
+                .client
+                .get(history_url(channel_id.as_ref(), before.as_deref(), *limit)),
         };
 
         let response = builder.send().await.map_err(RequestError::Network)?;
@@ -320,7 +337,7 @@ impl RestDispatcher {
             None
         };
 
-        let body = read_limited_body(response).await?;
+        let body = read_limited_body(response, command.response_body_limit()).await?;
 
         Ok(HttpResponse {
             status,
@@ -381,6 +398,36 @@ impl RestHandle {
         })
     }
 
+    pub fn try_fetch_messages(&self, channel_id: &str, limit: u8) -> Result<u32, RestSubmitError> {
+        self.submit_history(channel_id, None, limit)
+    }
+
+    pub fn try_fetch_messages_before(
+        &self,
+        channel_id: &str,
+        before_message_id: &str,
+        limit: u8,
+    ) -> Result<u32, RestSubmitError> {
+        validate_message_id(before_message_id)?;
+        self.submit_history(channel_id, Some(Box::<str>::from(before_message_id)), limit)
+    }
+
+    fn submit_history(
+        &self,
+        channel_id: &str,
+        before: Option<Box<str>>,
+        limit: u8,
+    ) -> Result<u32, RestSubmitError> {
+        validate_channel_id(channel_id)?;
+        validate_history_limit(limit)?;
+
+        self.submit(RestCommandKind::FetchMessages {
+            channel_id: Box::<str>::from(channel_id),
+            before,
+            limit,
+        })
+    }
+
     fn submit(&self, kind: RestCommandKind) -> Result<u32, RestSubmitError> {
         let request_id = self.next_request_id();
         let command = RestCommand { request_id, kind };
@@ -413,6 +460,14 @@ impl RestCommand {
             RestCommandKind::SendMessage { .. } => RestOperation::SendMessage,
             RestCommandKind::EditMessage { .. } => RestOperation::EditMessage,
             RestCommandKind::DeleteMessage { .. } => RestOperation::DeleteMessage,
+            RestCommandKind::FetchMessages { .. } => RestOperation::FetchMessages,
+        }
+    }
+
+    fn response_body_limit(&self) -> usize {
+        match &self.kind {
+            RestCommandKind::FetchMessages { .. } => MAX_HISTORY_RESPONSE_BODY,
+            _ => MAX_RESPONSE_BODY,
         }
     }
 
@@ -458,6 +513,20 @@ impl RestCommand {
                 channel_id: channel_id.clone(),
                 message_id: message_id.clone(),
             },
+            RestCommandKind::FetchMessages {
+                channel_id, limit, ..
+            } => match parse_rest_messages(&body, channel_id.as_ref(), usize::from(*limit)) {
+                Some(messages) => RestEvent::MessagesFetched {
+                    request_id: self.request_id,
+                    channel_id: channel_id.clone(),
+                    messages,
+                },
+                None => self.failed(
+                    Some(StatusCode::OK.as_u16()),
+                    false,
+                    "Discord returned an invalid message history payload",
+                ),
+            },
         }
     }
 }
@@ -475,6 +544,11 @@ enum RestCommandKind {
     DeleteMessage {
         channel_id: Box<str>,
         message_id: Box<str>,
+    },
+    FetchMessages {
+        channel_id: Box<str>,
+        before: Option<Box<str>>,
+        limit: u8,
     },
 }
 
@@ -522,23 +596,23 @@ enum RequestError {
     BodyTooLarge,
 }
 
-async fn read_limited_body(mut response: reqwest::Response) -> Result<Vec<u8>, RequestError> {
+async fn read_limited_body(
+    mut response: reqwest::Response,
+    max_body: usize,
+) -> Result<Vec<u8>, RequestError> {
     if response
         .content_length()
-        .map(|length| length > MAX_RESPONSE_BODY as u64)
+        .map(|length| length > max_body as u64)
         .unwrap_or(false)
     {
         return Err(RequestError::BodyTooLarge);
     }
 
-    let initial_capacity = response
-        .content_length()
-        .unwrap_or(0)
-        .min(MAX_RESPONSE_BODY as u64) as usize;
+    let initial_capacity = response.content_length().unwrap_or(0).min(max_body as u64) as usize;
     let mut body = Vec::with_capacity(initial_capacity);
 
     while let Some(chunk) = response.chunk().await.map_err(RequestError::Network)? {
-        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY {
+        if body.len().saturating_add(chunk.len()) > max_body {
             return Err(RequestError::BodyTooLarge);
         }
         body.extend_from_slice(&chunk);
@@ -547,8 +621,45 @@ async fn read_limited_body(mut response: reqwest::Response) -> Result<Vec<u8>, R
     Ok(body)
 }
 
+fn history_url(channel_id: &str, before: Option<&str>, limit: u8) -> String {
+    let mut url = format!("{API_BASE}/channels/{channel_id}/messages?limit={limit}");
+    if let Some(before) = before {
+        url.push_str("&before=");
+        url.push_str(before);
+    }
+    url
+}
+
 fn parse_rest_message(body: &[u8]) -> Option<RestMessage> {
     let message = serde_json::from_slice::<ApiMessage<'_>>(body).ok()?;
+    api_message_to_rest(message)
+}
+
+fn parse_rest_messages(
+    body: &[u8],
+    expected_channel_id: &str,
+    limit: usize,
+) -> Option<Vec<RestMessage>> {
+    let messages = serde_json::from_slice::<Vec<ApiMessage<'_>>>(body).ok()?;
+    if messages.len() > limit {
+        return None;
+    }
+
+    let mut parsed = Vec::with_capacity(messages.len());
+    for message in messages {
+        if message.channel_id != expected_channel_id {
+            return None;
+        }
+        parsed.push(api_message_to_rest(message)?);
+    }
+    Some(parsed)
+}
+
+fn api_message_to_rest(message: ApiMessage<'_>) -> Option<RestMessage> {
+    if !is_snowflake(message.id) || !is_snowflake(message.channel_id) {
+        return None;
+    }
+
     Some(RestMessage {
         id: Box::<str>::from(message.id),
         channel_id: Box::<str>::from(message.channel_id),
@@ -607,6 +718,14 @@ fn validate_message_id(value: &str) -> Result<(), RestSubmitError> {
     }
 }
 
+fn validate_history_limit(limit: u8) -> Result<(), RestSubmitError> {
+    if (1..=MAX_HISTORY_MESSAGES).contains(&limit) {
+        Ok(())
+    } else {
+        Err(RestSubmitError::InvalidHistoryLimit)
+    }
+}
+
 fn is_snowflake(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
 }
@@ -646,6 +765,28 @@ mod tests {
     }
 
     #[test]
+    fn history_limit_is_strictly_bounded() {
+        assert_eq!(validate_history_limit(1), Ok(()));
+        assert_eq!(validate_history_limit(100), Ok(()));
+        assert_eq!(
+            validate_history_limit(0),
+            Err(RestSubmitError::InvalidHistoryLimit)
+        );
+    }
+
+    #[test]
+    fn history_url_uses_only_validated_numeric_anchors() {
+        assert_eq!(
+            history_url("22", None, 25),
+            "https://discord.com/api/v9/channels/22/messages?limit=25"
+        );
+        assert_eq!(
+            history_url("22", Some("55"), 50),
+            "https://discord.com/api/v9/channels/22/messages?limit=50&before=55"
+        );
+    }
+
+    #[test]
     fn rate_limit_seconds_are_bounded_and_rounded_up() {
         assert_eq!(seconds_to_duration(0.001), Some(Duration::from_millis(1)));
         assert_eq!(
@@ -674,6 +815,35 @@ mod tests {
         assert_eq!(message.channel_id.as_ref(), "22");
         assert_eq!(message.author_username.as_deref(), Some("diddy"));
         assert_eq!(message.content.as_ref(), "hello");
+    }
+
+    #[test]
+    fn history_response_parser_is_selective_and_bounded() {
+        let body = br#"[
+            {
+                "id":"55",
+                "channel_id":"22",
+                "content":"newer",
+                "author":{"username":"diddy","id":"11","avatar":"x"},
+                "attachments":[{"id":"1","filename":"ignored.bin"}],
+                "embeds":[{"title":"ignored"}]
+            },
+            {
+                "id":"54",
+                "channel_id":"22",
+                "content":"older",
+                "author":{"username":"other","id":"12"},
+                "reactions":[{"count":99}]
+            }
+        ]"#;
+
+        let messages = parse_rest_messages(body, "22", 2).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].id.as_ref(), "55");
+        assert_eq!(messages[0].content.as_ref(), "newer");
+        assert_eq!(messages[1].author_username.as_deref(), Some("other"));
+        assert!(parse_rest_messages(body, "22", 1).is_none());
+        assert!(parse_rest_messages(body, "23", 2).is_none());
     }
 
     #[test]
