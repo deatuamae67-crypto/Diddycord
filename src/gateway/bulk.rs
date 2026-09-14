@@ -62,12 +62,8 @@ where
         where
             A: SeqAccess<'de>,
         {
-            let mut ids = Vec::with_capacity(
-                sequence
-                    .size_hint()
-                    .unwrap_or(0)
-                    .min(MAX_BULK_DELETE_IDS),
-            );
+            let mut ids =
+                Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX_BULK_DELETE_IDS));
 
             while let Some(id) = sequence.next_element::<&'de str>()? {
                 if ids.len() >= MAX_BULK_DELETE_IDS {
@@ -95,10 +91,9 @@ mod tests {
 
     #[test]
     fn bulk_delete_emits_existing_single_delete_events() {
-        let raw: &RawValue = serde_json::from_str(
-            r#"{"ids":["101","102","103"],"channel_id":"22","guild_id":"9"}"#,
-        )
-        .unwrap();
+        let raw: &RawValue =
+            serde_json::from_str(r#"{"ids":["101","102","103"],"channel_id":"22","guild_id":"9"}"#)
+                .unwrap();
         let (sender, mut receiver) = broadcast::channel(8);
 
         emit_message_delete_bulk(&sender, raw);
@@ -118,10 +113,8 @@ mod tests {
 
     #[test]
     fn bulk_delete_rejects_non_snowflake_ids() {
-        let raw: &RawValue = serde_json::from_str(
-            r#"{"ids":["101","../../bad"],"channel_id":"22"}"#,
-        )
-        .unwrap();
+        let raw: &RawValue =
+            serde_json::from_str(r#"{"ids":["101","../../bad"],"channel_id":"22"}"#).unwrap();
         let (sender, mut receiver) = broadcast::channel(8);
 
         emit_message_delete_bulk(&sender, raw);
