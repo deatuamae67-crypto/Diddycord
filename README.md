@@ -78,6 +78,15 @@ The project is intentionally split into small, bounded layers so networking neve
 - Unrelated or stale REST completions are ignored by request ID, so switching channels cannot corrupt the new selection's pagination state.
 - Page size is clamped to Discord's 1–100 range and all submissions still use the existing bounded REST queue.
 
+### Chapter 10 — cancellable network lifecycle
+
+- `NetworkBackbone::control()` exposes a cloneable, low-overhead control handle before the Gateway task is moved into the runtime.
+- `NetworkControl::shutdown()` cancels pending connect/read/reconnect waits and transitions the Gateway loop to `Stopped` without blocking a frontend or mobile lifecycle callback.
+- `NetworkStatus` reports `Idle`, `Connecting`, `Identifying`, `Resuming`, `Ready`, `Reconnecting`, `Stopped`, and fatal close states through a latest-value Tokio `watch` channel.
+- Slow frontends cannot build a lifecycle-event backlog: status observation is level-triggered and only the newest state is retained.
+- Recoverable disconnects preserve existing resume/reidentify and bounded backoff behavior while publishing retry state and attempt count.
+- A shutdown requested before `run()` performs no network I/O, which makes Android activity/service teardown deterministic and testable.
+
 ## Authentication
 
 The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
@@ -121,15 +130,22 @@ The Galaxy S6 family exists in both 64-bit and 32-bit userspace variants dependi
 
 ## Frontend usage
 
-Gateway receive path:
+Gateway receive/lifecycle path:
 
 ```rust
 let backbone = NetworkBackbone::new(config, 256);
+let control = backbone.control();
+let mut network_status = control.subscribe_status();
 let mut gateway_events = backbone.subscribe();
 let mut state = FrontendState::new(64, 128);
 
+runtime.spawn(async move {
+    let _ = backbone.run().await;
+});
+
 // Once per frame/tick:
 let gateway_report = state.drain(&mut gateway_events, 64);
+let current_status = *network_status.borrow();
 
 for guild in state.topology().guilds() {
     for channel in state.topology().channels(guild.id) {
@@ -139,6 +155,9 @@ for guild in state.topology().guilds() {
         let _ = thread.parent_id.as_deref();
     }
 }
+
+// During application/service shutdown:
+control.shutdown();
 ```
 
 REST action/history path:
@@ -172,7 +191,7 @@ Both transports are bounded: a slow frontend cannot block Gateway heartbeats or 
 ```text
 src/main.rs       desktop Gateway harness
 src/lib.rs        public library surface
-src/gateway/      Discord Gateway transport, parser, heartbeat and reconnect logic
+src/gateway/      Discord Gateway transport, parser, heartbeat, reconnect and lifecycle control
 src/history.rs    selected-channel history paging state machine
 src/rest.rs       bounded Discord REST actor, outbound actions and message-history reads
 src/runtime.rs    low-overhead Tokio runtime configuration
