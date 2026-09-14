@@ -126,6 +126,11 @@ impl FrontendState {
             FrontendEvent::GatewayReady | FrontendEvent::GatewayResumed => {
                 self.gateway_ready = true;
             }
+            FrontendEvent::DirectChannelCreate(channel)
+            | FrontendEvent::DirectChannelUpdate(channel) => {
+                self.unretire_channel(channel.id.as_ref());
+            }
+            FrontendEvent::DirectChannelDelete(_) => {}
             FrontendEvent::Message(message) => {
                 let channel_id = message.channel_id.as_ref();
                 if self.is_retired_channel(channel_id) {
@@ -372,6 +377,9 @@ impl FrontendState {
                         .map(|thread| thread.id.clone()),
                 );
             }
+            FrontendEvent::DirectChannelDelete(delete) => {
+                retired.push(delete.channel_id.clone());
+            }
             FrontendEvent::ThreadUpdate(thread) if thread.archived => {
                 retired.push(thread.id.clone());
             }
@@ -578,8 +586,9 @@ fn snowflake_cmp(left: &str, right: &str) -> Ordering {
 mod tests {
     use super::*;
     use crate::{
-        FrontendChannel, FrontendChannelDelete, FrontendGuildDelete, FrontendGuildSnapshot,
-        FrontendThread, FrontendThreadListSync, RestOperation,
+        FrontendChannel, FrontendChannelDelete, FrontendDirectChannel,
+        FrontendDirectChannelDelete, FrontendGuildDelete, FrontendGuildSnapshot, FrontendThread,
+        FrontendThreadListSync, RestOperation,
     };
 
     fn message(id: &str, channel_id: &str, content: &str) -> Arc<FrontendEvent> {
@@ -632,6 +641,16 @@ mod tests {
                 .map(|id| topology_channel(id, id))
                 .collect(),
         }))
+    }
+
+    fn direct_channel(id: &str) -> FrontendDirectChannel {
+        FrontendDirectChannel {
+            id: Box::<str>::from(id),
+            recipient_id: Some(Box::<str>::from("42")),
+            recipient_username: Some(Box::<str>::from("alice")),
+            recipient_global_name: None,
+            recipient_avatar_hash: None,
+        }
     }
 
     #[test]
@@ -1016,5 +1035,53 @@ mod tests {
 
         assert_eq!(state.channel_message_count("10"), 0);
         assert_eq!(state.channel_message_count("11"), 1);
+    }
+
+    #[test]
+    fn direct_channel_delete_retires_timeline_and_blocks_late_history() {
+        let mut state = FrontendState::new(8, 8);
+        state.apply(Arc::new(FrontendEvent::DirectChannelCreate(direct_channel(
+            "77",
+        ))));
+        state.apply(message("100", "77", "dm"));
+        assert_eq!(state.channel_message_count("77"), 1);
+
+        state.apply(Arc::new(FrontendEvent::DirectChannelDelete(
+            FrontendDirectChannelDelete {
+                channel_id: Box::<str>::from("77"),
+            },
+        )));
+        assert_eq!(state.channel_message_count("77"), 0);
+
+        state.apply_rest(&RestEvent::MessagesFetched {
+            request_id: 30,
+            channel_id: Box::<str>::from("77"),
+            messages: vec![rest_message("90", "77", "late history")],
+        });
+        state.apply(message("101", "77", "late gateway"));
+        assert_eq!(state.channel_message_count("77"), 0);
+    }
+
+    #[test]
+    fn recreated_direct_channel_clears_retirement_tombstone() {
+        let mut state = FrontendState::new(8, 8);
+        state.apply(message("100", "77", "before delete"));
+        state.apply(Arc::new(FrontendEvent::DirectChannelDelete(
+            FrontendDirectChannelDelete {
+                channel_id: Box::<str>::from("77"),
+            },
+        )));
+        state.apply(message("101", "77", "blocked"));
+        assert_eq!(state.channel_message_count("77"), 0);
+
+        state.apply(Arc::new(FrontendEvent::DirectChannelUpdate(direct_channel(
+            "77",
+        ))));
+        state.apply(message("102", "77", "active again"));
+        assert_eq!(state.channel_message_count("77"), 1);
+        assert_eq!(
+            state.latest_message("77").unwrap().content.as_ref(),
+            "active again"
+        );
     }
 }
