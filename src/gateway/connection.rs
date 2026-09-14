@@ -19,8 +19,8 @@ use super::{
         classify_close, gateway_url, heartbeat_jitter, invalid_session_delay, resume_or_reidentify,
         AuthMode, ConnectionExit, ConnectionNext, SessionState,
     },
-    BoxError, NetworkBackbone, CONNECT_TIMEOUT, COOPERATIVE_YIELD_EVERY, INITIAL_GATEWAY_URL,
-    MAX_GATEWAY_MESSAGE,
+    BoxError, NetworkBackbone, NetworkStatus, CONNECT_TIMEOUT, COOPERATIVE_YIELD_EVERY,
+    INITIAL_GATEWAY_URL, MAX_GATEWAY_MESSAGE,
 };
 use crate::gateway::events::FrontendEvent;
 use crate::gateway::io_error;
@@ -62,6 +62,10 @@ impl NetworkBackbone {
         .map_err(|_| io_error("Discord Gateway connection timed out"))??;
 
         let heartbeat_interval = receive_hello(&mut socket).await?;
+        self.set_status(match auth {
+            AuthMode::Identify => NetworkStatus::Identifying,
+            AuthMode::Resume => NetworkStatus::Resuming,
+        });
 
         match auth {
             AuthMode::Identify => {
@@ -135,11 +139,13 @@ impl NetworkBackbone {
                                                 Some(Box::<str>::from(ready.session_id));
                                             session.resume_gateway_url =
                                                 Some(Box::<str>::from(ready.resume_gateway_url));
+                                            self.set_status(NetworkStatus::Ready);
                                             emit(&self.frontend, FrontendEvent::GatewayReady);
                                         }
                                     }
                                 }
                                 Some("RESUMED") => {
+                                    self.set_status(NetworkStatus::Ready);
                                     emit(&self.frontend, FrontendEvent::GatewayResumed);
                                 }
                                 Some("GUILD_CREATE") => {
