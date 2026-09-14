@@ -391,10 +391,9 @@ mod tests {
 
     #[test]
     fn guild_channel_is_ignored_by_direct_parser() {
-        let raw: &RawValue = serde_json::from_str(
-            r#"{"id":"777","guild_id":"9","type":0,"name":"general"}"#,
-        )
-        .unwrap();
+        let raw: &RawValue =
+            serde_json::from_str(r#"{"id":"777","guild_id":"9","type":0,"name":"general"}"#)
+                .unwrap();
         let (sender, mut receiver) = broadcast::channel(8);
 
         emit_direct_channel_create(&sender, raw);
