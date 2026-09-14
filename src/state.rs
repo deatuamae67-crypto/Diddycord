@@ -384,9 +384,7 @@ impl FrontendState {
                         Some(parent_ids) => cached
                             .parent_id
                             .as_deref()
-                            .map(|parent_id| {
-                                parent_ids.iter().any(|id| id.as_ref() == parent_id)
-                            })
+                            .map(|parent_id| parent_ids.iter().any(|id| id.as_ref() == parent_id))
                             .unwrap_or(false),
                         None => true,
                     };
@@ -452,7 +450,8 @@ impl FrontendState {
         if self.retired_channels.len() >= max_retired {
             self.retired_channels.pop_front();
         }
-        self.retired_channels.push_back(Box::<str>::from(channel_id));
+        self.retired_channels
+            .push_back(Box::<str>::from(channel_id));
     }
 
     fn unretire_channel(&mut self, channel_id: &str) {
@@ -943,21 +942,17 @@ mod tests {
         state.apply(message("100", "10", "parent"));
         state.apply(message("101", "30", "thread"));
 
-        state.apply(Arc::new(FrontendEvent::GuildDelete(
-            FrontendGuildDelete {
-                id: Box::<str>::from("1"),
-                unavailable: true,
-            },
-        )));
+        state.apply(Arc::new(FrontendEvent::GuildDelete(FrontendGuildDelete {
+            id: Box::<str>::from("1"),
+            unavailable: true,
+        })));
         assert_eq!(state.channel_message_count("10"), 1);
         assert_eq!(state.channel_message_count("30"), 1);
 
-        state.apply(Arc::new(FrontendEvent::GuildDelete(
-            FrontendGuildDelete {
-                id: Box::<str>::from("1"),
-                unavailable: false,
-            },
-        )));
+        state.apply(Arc::new(FrontendEvent::GuildDelete(FrontendGuildDelete {
+            id: Box::<str>::from("1"),
+            unavailable: false,
+        })));
         assert_eq!(state.channel_message_count("10"), 0);
         assert_eq!(state.channel_message_count("30"), 0);
     }
