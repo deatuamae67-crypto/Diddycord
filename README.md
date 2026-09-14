@@ -61,6 +61,23 @@ The project is intentionally split into small, bounded layers so networking neve
 - Already cached live/Gateway messages win over history snapshots, preventing a late REST response from overwriting a newer edit.
 - Cache capacity still keeps the newest configured messages, so repeated backward pagination cannot grow memory without bound.
 
+### Chapter 8 — bounded active-thread topology
+
+- Selective active-thread bootstrap from `GUILD_CREATE` plus `THREAD_CREATE`, `THREAD_UPDATE`, `THREAD_DELETE`, and `THREAD_LIST_SYNC`.
+- Thread cache retains only navigation fields: ID, guild, parent channel, name, type, archived state, and locked state.
+- Active threads live inside each bounded guild entry with a configurable per-guild cap; there is no global thread-ID hash database.
+- Scoped `THREAD_LIST_SYNC` replaces only the named parent-channel subsets, while full sync replaces the complete guild thread set.
+- Archived threads disappear from active navigation, and deleting a parent channel also removes its active child threads.
+
+### Chapter 9 — selected-channel history pager
+
+- `HistoryPager` turns the low-level Chapter 7 history endpoints into a tiny synchronous frontend controller.
+- Selecting a channel resets stale pagination state and guarantees at most one history request is in flight for that selection.
+- `try_load_latest()` submits the initial recent page; `try_load_older()` automatically anchors backward pagination to the oldest message currently cached for that channel.
+- Matching REST completions release the pending slot and short pages mark the channel history as exhausted.
+- Unrelated or stale REST completions are ignored by request ID, so switching channels cannot corrupt the new selection's pagination state.
+- Page size is clamped to Discord's 1–100 range and all submissions still use the existing bounded REST queue.
+
 ## Authentication
 
 The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
@@ -118,6 +135,9 @@ for guild in state.topology().guilds() {
     for channel in state.topology().channels(guild.id) {
         let _ = channel.name.as_deref();
     }
+    for thread in state.topology().threads(guild.id) {
+        let _ = thread.parent_id.as_deref();
+    }
 }
 ```
 
@@ -127,18 +147,23 @@ REST action/history path:
 let (rest, worker) = RestDispatcher::new(&token, 32, 64)?;
 runtime.spawn(worker.run());
 let mut rest_events = rest.subscribe();
+let mut history = HistoryPager::new(50);
 
 let send_request = rest.try_send_message(channel_id, "hello")?;
-let history_request = rest.try_fetch_messages(channel_id, 50)?;
+history.select_channel(channel_id);
+let initial_history = history.try_load_latest(&rest)?;
 
-// For explicit backward pagination, use the oldest cached message ID.
-let older_request = rest.try_fetch_messages_before(channel_id, oldest_message_id, 50)?;
+// Once per frame/tick, process REST results without blocking.
+while let Ok(event) = rest_events.try_recv() {
+    state.apply_rest(event.as_ref());
+    let completion = history.observe_rest(event.as_ref());
+}
 
-// Also once per frame/tick. Successful results converge with Gateway state.
-let rest_report = state.drain_rest(&mut rest_events, 32);
+// When the user scrolls to the top of the cached timeline:
+let older_history = history.try_load_older(&state, &rest)?;
 ```
 
-History fetching is deliberately caller-driven: selecting or scrolling a channel can request a page, while idle channels consume no REST bandwidth or history memory beyond the configured presentation cache.
+History fetching remains caller-driven: selecting or scrolling a channel can request a page, while idle channels consume no REST bandwidth or history memory beyond the configured presentation cache.
 
 Both transports are bounded: a slow frontend cannot block Gateway heartbeats or create an unbounded outbound queue.
 
@@ -148,10 +173,11 @@ Both transports are bounded: a slow frontend cannot block Gateway heartbeats or 
 src/main.rs       desktop Gateway harness
 src/lib.rs        public library surface
 src/gateway/      Discord Gateway transport, parser, heartbeat and reconnect logic
+src/history.rs    selected-channel history paging state machine
 src/rest.rs       bounded Discord REST actor, outbound actions and message-history reads
 src/runtime.rs    low-overhead Tokio runtime configuration
 src/state.rs      bounded synchronous presentation cache and REST/Gateway/history convergence
-src/topology.rs   bounded guild/channel navigation state
+src/topology.rs   bounded guild/channel/thread navigation state
 docs/             architecture notes by chapter
 ```
 

@@ -1,4 +1,5 @@
 pub mod gateway;
+pub mod history;
 pub mod rest;
 pub mod runtime;
 pub mod state;
@@ -10,6 +11,7 @@ pub use gateway::{
     FrontendMessageDelete, FrontendMessageUpdate, FrontendThread, FrontendThreadDelete,
     FrontendThreadListSync, GatewayConfig, NetworkBackbone, DEFAULT_INTENTS,
 };
+pub use history::{HistoryCompletion, HistoryLoadStatus, HistoryPager};
 pub use rest::{
     RestBuildError, RestDispatcher, RestEvent, RestHandle, RestMessage, RestOperation,
     RestSubmitError,
