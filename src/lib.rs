@@ -6,11 +6,12 @@ pub mod state;
 pub mod topology;
 
 pub use gateway::{
-    CurrentUser, FrontendChannel, FrontendChannelChange, FrontendChannelDelete, FrontendEvent,
+    CurrentUser, DirectDrainReport, DirectTopologyState, FrontendChannel, FrontendChannelChange,
+    FrontendChannelDelete, FrontendDirectChannel, FrontendDirectChannelDelete, FrontendEvent,
     FrontendGuildDelete, FrontendGuildSnapshot, FrontendGuildUpdate, FrontendMessage,
     FrontendMessageDelete, FrontendMessageUpdate, FrontendThread, FrontendThreadDelete,
     FrontendThreadListSync, GatewayConfig, NetworkBackbone, NetworkControl, NetworkStatus,
-    DEFAULT_INTENTS,
+    DEFAULT_INTENTS, DEFAULT_MAX_DIRECT_CHANNELS,
 };
 pub use history::{HistoryCompletion, HistoryLoadStatus, HistoryPager};
 pub use rest::{

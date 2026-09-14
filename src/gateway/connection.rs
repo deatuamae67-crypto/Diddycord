@@ -7,6 +7,7 @@ use tokio_tungstenite::{
 
 use super::{
     bulk::emit_message_delete_bulk,
+    direct::{emit_direct_channel_create, emit_direct_channel_delete, emit_direct_channel_update},
     events::{
         emit, emit_channel_create, emit_channel_delete, emit_channel_update, emit_guild_create,
         emit_guild_delete, emit_guild_update, emit_message_create, emit_message_delete,
@@ -185,6 +186,7 @@ impl NetworkBackbone {
                                     if self.frontend.receiver_count() != 0 {
                                         if let Some(raw) = envelope.d {
                                             emit_channel_create(&self.frontend, raw);
+                                            emit_direct_channel_create(&self.frontend, raw);
                                         }
                                     }
                                 }
@@ -192,6 +194,7 @@ impl NetworkBackbone {
                                     if self.frontend.receiver_count() != 0 {
                                         if let Some(raw) = envelope.d {
                                             emit_channel_update(&self.frontend, raw);
+                                            emit_direct_channel_update(&self.frontend, raw);
                                         }
                                     }
                                 }
@@ -199,6 +202,7 @@ impl NetworkBackbone {
                                     if self.frontend.receiver_count() != 0 {
                                         if let Some(raw) = envelope.d {
                                             emit_channel_delete(&self.frontend, raw);
+                                            emit_direct_channel_delete(&self.frontend, raw);
                                         }
                                     }
                                 }

@@ -7,11 +7,16 @@ use tokio::{
 
 mod bulk;
 mod connection;
+mod direct;
 mod events;
 mod identity;
 mod protocol;
 mod recovery;
 
+pub use direct::{
+    DirectDrainReport, DirectTopologyState, FrontendDirectChannel, FrontendDirectChannelDelete,
+    DEFAULT_MAX_DIRECT_CHANNELS,
+};
 pub use events::{
     FrontendChannel, FrontendChannelChange, FrontendChannelDelete, FrontendEvent,
     FrontendGuildDelete, FrontendGuildSnapshot, FrontendGuildUpdate, FrontendMessage,

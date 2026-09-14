@@ -106,16 +106,25 @@ The project is intentionally split into small, bounded layers so networking neve
 
 ### Chapter 13 — current bot identity
 
-- `READY` now selectively captures the authenticated bot's ID, username, global display name, discriminator, avatar hash, and bot flag while ignoring unrelated account/application metadata.
-- `USER_UPDATE` refreshes that identity without touching the high-volume frontend event stream.
-- Identity uses `watch<Option<Arc<CurrentUser>>>`: there is no growing queue, and multiple frontend consumers share the same allocated strings.
+- `READY` selectively captures the authenticated bot's ID, username, global display name, discriminator, avatar hash, and bot flag while ignoring unrelated account/application metadata.
+- `USER_UPDATE` refreshes identity without touching the high-volume frontend event stream.
+- Identity uses `watch<Option<Arc<CurrentUser>>>`: there is no growing queue, and multiple consumers share the same allocated strings.
 - `NetworkControl::self_user()` provides an immediate snapshot while `subscribe_self_user()` supports reactive desktop/mobile UI updates.
 - `CurrentUser::display_name()` prefers Discord's global name and falls back to the username.
-- The value survives reconnect/resume transitions until Discord supplies a newer identity, and the feature remains strictly within bot/application authentication.
+
+### Chapter 14 — bounded direct-message topology
+
+- One-to-one DM `CHANNEL_CREATE`, `CHANNEL_UPDATE`, and `CHANNEL_DELETE` payloads are recognized separately from guild channels.
+- DM parsing retains only the channel ID and first recipient's ID, username, global name, and avatar hash; unrelated channel/user metadata is skipped.
+- The recipient array is consumed with a custom Serde visitor that keeps only the first entry rather than allocating a payload-sized recipient list.
+- `DirectTopologyState` is a vector-backed LRU cache with a default capacity of 64 channels, configurable by the caller.
+- Known DM entries are touched by message lifecycle events, so active conversations remain hot in the navigation cache.
+- `DirectTopologyState::drain()` is non-blocking and budgeted, with separate direct-event, broadcast-lag, and LRU-drop accounting.
+- Group-DM/user-token semantics are deliberately outside the bot/application model.
 
 ## Authentication
 
-The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
+The core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
 
 For the desktop harness:
 
@@ -164,7 +173,9 @@ let control = backbone.control();
 let mut network_status = control.subscribe_status();
 let self_user = control.subscribe_self_user();
 let mut gateway_events = backbone.subscribe();
+let mut direct_events = backbone.subscribe();
 let mut state = FrontendState::new(64, 128);
+let mut direct = DirectTopologyState::default();
 
 runtime.spawn(async move {
     let _ = backbone.run().await;
@@ -172,6 +183,7 @@ runtime.spawn(async move {
 
 // Once per frame/tick:
 let gateway_report = state.drain(&mut gateway_events, 64);
+let direct_report = direct.drain(&mut direct_events, 64);
 let current_status = *network_status.borrow();
 if let Some(user) = self_user.borrow().as_ref() {
     let display_name = user.display_name();
@@ -185,6 +197,11 @@ for guild in state.topology().guilds() {
     for thread in state.topology().threads(guild.id) {
         let _ = thread.parent_id.as_deref();
     }
+}
+
+for dm in direct.channels() {
+    let display_name = dm.display_name();
+    let channel_id = dm.id.as_ref();
 }
 
 // During application/service shutdown:
@@ -215,20 +232,20 @@ let older_history = history.try_load_older(&state, &rest)?;
 
 History fetching remains caller-driven: selecting or scrolling a channel can request a page, while idle channels consume no REST bandwidth or history memory beyond the configured presentation cache.
 
-Both transports are bounded: a slow frontend cannot block Gateway heartbeats or create an unbounded outbound queue.
+All Gateway-facing transports are bounded: a slow frontend cannot block heartbeats or create an unbounded queue.
 
 ## Repository layout
 
 ```text
-src/main.rs       desktop Gateway harness
-src/lib.rs        public library surface
-src/gateway/      Discord Gateway transport, selective parsers, identity, heartbeat, reconnect and lifecycle control
-src/history.rs    selected-channel history paging state machine
-src/rest.rs       bounded Discord REST actor, outbound actions and message-history reads
-src/runtime.rs    low-overhead Tokio runtime configuration
-src/state.rs      bounded synchronous presentation cache and topology-driven invalidation
-src/topology.rs   bounded guild/channel/thread navigation state
-docs/             architecture notes by chapter
+src/main.rs          desktop Gateway harness
+src/lib.rs           public library surface
+src/gateway/         Gateway transport, selective parsers, DM topology, identity, heartbeat, reconnect and lifecycle control
+src/history.rs       selected-channel history paging state machine
+src/rest.rs          bounded Discord REST actor, outbound actions and message-history reads
+src/runtime.rs       low-overhead Tokio runtime configuration
+src/state.rs         bounded synchronous presentation cache and topology-driven invalidation
+src/topology.rs      bounded guild/channel/thread navigation state
+docs/                architecture notes by chapter
 ```
 
 ## Security boundary
