@@ -365,7 +365,8 @@ impl FrontendState {
                 .position(|cached| {
                     frontend_message(cached)
                         .map(|existing| {
-                            snowflake_cmp(message.id.as_ref(), existing.id.as_ref()) == Ordering::Less
+                            snowflake_cmp(message.id.as_ref(), existing.id.as_ref())
+                                == Ordering::Less
                         })
                         .unwrap_or(false)
                 })
@@ -631,7 +632,10 @@ mod tests {
             ],
         });
 
-        let ids: Vec<&str> = state.messages("22").map(|message| message.id.as_ref()).collect();
+        let ids: Vec<&str> = state
+            .messages("22")
+            .map(|message| message.id.as_ref())
+            .collect();
         assert_eq!(ids, vec!["180", "190", "200"]);
     }
 
@@ -666,7 +670,10 @@ mod tests {
             ],
         });
 
-        let ids: Vec<&str> = state.messages("22").map(|message| message.id.as_ref()).collect();
+        let ids: Vec<&str> = state
+            .messages("22")
+            .map(|message| message.id.as_ref())
+            .collect();
         assert_eq!(ids, vec!["180", "190", "200"]);
     }
 

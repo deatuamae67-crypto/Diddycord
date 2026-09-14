@@ -398,11 +398,7 @@ impl RestHandle {
         })
     }
 
-    pub fn try_fetch_messages(
-        &self,
-        channel_id: &str,
-        limit: u8,
-    ) -> Result<u32, RestSubmitError> {
+    pub fn try_fetch_messages(&self, channel_id: &str, limit: u8) -> Result<u32, RestSubmitError> {
         self.submit_history(channel_id, None, limit)
     }
 
@@ -413,11 +409,7 @@ impl RestHandle {
         limit: u8,
     ) -> Result<u32, RestSubmitError> {
         validate_message_id(before_message_id)?;
-        self.submit_history(
-            channel_id,
-            Some(Box::<str>::from(before_message_id)),
-            limit,
-        )
+        self.submit_history(channel_id, Some(Box::<str>::from(before_message_id)), limit)
     }
 
     fn submit_history(
