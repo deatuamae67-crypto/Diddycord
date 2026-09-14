@@ -87,6 +87,14 @@ The project is intentionally split into small, bounded layers so networking neve
 - Recoverable disconnects preserve existing resume/reidentify and bounded backoff behavior while publishing retry state and attempt count.
 - A shutdown requested before `run()` performs no network I/O, which makes Android activity/service teardown deterministic and testable.
 
+### Chapter 11 — bounded bulk message deletion
+
+- Gateway `MESSAGE_DELETE_BULK` events now converge with the same cached deletion semantics as ordinary `MESSAGE_DELETE` events.
+- A custom Serde sequence visitor bounds each bulk payload to at most 100 retained message IDs instead of allowing payload-controlled transient allocation growth.
+- Channel and message identifiers are validated as decimal Discord snowflakes before any frontend deletion event is emitted.
+- Malformed or over-limit payloads are rejected atomically rather than partially mutating the presentation cache.
+- Accepted IDs fan out through the existing bounded Gateway broadcast, so the network loop still cannot be blocked by a slow frontend or create an unbounded queue.
+
 ## Authentication
 
 The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
@@ -191,7 +199,7 @@ Both transports are bounded: a slow frontend cannot block Gateway heartbeats or 
 ```text
 src/main.rs       desktop Gateway harness
 src/lib.rs        public library surface
-src/gateway/      Discord Gateway transport, parser, heartbeat, reconnect and lifecycle control
+src/gateway/      Discord Gateway transport, selective parsers, heartbeat, reconnect and lifecycle control
 src/history.rs    selected-channel history paging state machine
 src/rest.rs       bounded Discord REST actor, outbound actions and message-history reads
 src/runtime.rs    low-overhead Tokio runtime configuration
