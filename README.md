@@ -1,23 +1,40 @@
 # Diddycord
 
-Diddycord is an experimental ultra-low-overhead Rust Discord Gateway client core. The design target is one codebase that remains responsive on modern desktop hardware while still being practical on legacy systems such as a Core 2 Duo / Windows 7 machine and Android 6-era ARM hardware.
+Diddycord is an experimental ultra-low-overhead Rust Discord client core. The design target is one codebase that remains responsive on modern desktop hardware while still being practical on legacy systems such as a Core 2 Duo / Windows 7 machine and Android 6-era ARM hardware.
 
-The repository currently contains **Chapter 1: the asynchronous networking backbone**.
+The project is intentionally split into small, bounded layers so networking never waits for a synchronous frontend and memory usage remains predictable.
 
-## Chapter 1 status
+## Current implementation
 
-Implemented:
+### Chapter 1 — asynchronous Gateway backbone
 
 - Tokio multi-thread runtime with a 1–4 worker cap, bounded blocking pool, reduced worker stack size, explicit scheduler polling intervals, and cooperative yielding during Gateway bursts.
 - Secure WebSocket connection to Discord Gateway **v9** using `tokio-tungstenite` + `rustls`.
-- Native-root and WebPKI-root TLS paths for desktop and Android-oriented builds.
-- Borrowed outer Gateway JSON parsing with `serde_json::value::RawValue` so large event payloads are not materialized into generic JSON trees.
-- Selective `MESSAGE_CREATE` extraction of only `channel_id`, `author.username`, and `content`.
-- Bounded `tokio::sync::broadcast` bridge so a slow synchronous UI cannot backpressure networking or heartbeats.
+- Borrowed outer Gateway JSON parsing with `serde_json::value::RawValue` instead of a generic JSON DOM.
 - HELLO, IDENTIFY, RESUME, HEARTBEAT, HEARTBEAT ACK, RECONNECT, INVALID SESSION, close-code classification, session resume, and reconnect backoff.
-- First-heartbeat jitter, 1–5 second invalid-session delay, and a minimum 5 second IDENTIFY retry interval.
-- Tight WebSocket read/write buffers and a hard inbound frame/message ceiling.
-- Parser/recovery unit tests.
+- Tight WebSocket buffers, explicit timeouts, and bounded frontend transport.
+
+### Chapter 2 — synchronous frontend state
+
+- Frontend-owned `FrontendState`; no mutex between rendering and Gateway I/O.
+- Budgeted non-blocking event draining with `try_recv()`.
+- Bounded per-channel message histories and bounded channel count.
+- Least-recently-used channel eviction and explicit broadcast-lag accounting.
+
+### Chapter 3 — cached message lifecycle
+
+- Selective `MESSAGE_CREATE`, `MESSAGE_UPDATE`, and `MESSAGE_DELETE` parsing.
+- Message IDs retained so cached messages can be edited and removed.
+- Edits/deletes operate only inside the already bounded channel history; no global message database or message-id hash index is required.
+
+### Chapter 4 — outbound REST dispatcher
+
+- Bounded asynchronous command actor for text message send/edit/delete operations.
+- Non-blocking synchronous `RestHandle::try_*` submission API.
+- rustls/WebPKI HTTP transport with redirects disabled and Authorization marked sensitive.
+- Conservative Discord 429 handling plus `X-RateLimit-*` pre-emptive delays.
+- Bounded response-body reads and selective JSON parsing.
+- Ambiguous transport failures are not automatically retried, avoiding accidental duplicate message POSTs.
 
 ## Authentication
 
@@ -42,7 +59,7 @@ The project pins Rust **1.77.2** because ordinary Rust Windows targets raised th
 cargo build --release
 ```
 
-The release profile is deliberately size/runtime oriented:
+The release profile is deliberately runtime/footprint oriented:
 
 ```toml
 [profile.release]
@@ -60,27 +77,43 @@ The core itself does not depend on a desktop GUI API. CI cross-checks `aarch64-l
 
 The Galaxy S6 family exists in both 64-bit and 32-bit userspace variants depending on firmware/device configuration, so final packaging should verify the target handset before dropping `armeabi-v7a` support.
 
-## Frontend bridge
+## Frontend usage
 
-Create a receiver before running the backbone:
+Gateway receive path:
 
 ```rust
 let backbone = NetworkBackbone::new(config, 256);
-let mut events = backbone.subscribe();
+let mut gateway_events = backbone.subscribe();
+let mut state = FrontendState::new(64, 128);
+
+// Once per frame/tick:
+let report = state.drain(&mut gateway_events, 64);
 ```
 
-A synchronous render/UI loop can call `events.try_recv()` once per frame/tick. `broadcast` is bounded: lagging consumers lose old entries instead of blocking the network executor.
+REST send/edit/delete path:
+
+```rust
+let (rest, worker) = RestDispatcher::new(&token, 32, 64)?;
+runtime.spawn(worker.run());
+let mut rest_events = rest.subscribe();
+
+let request_id = rest.try_send_message(channel_id, "hello")?;
+```
+
+Both transports are bounded: a slow frontend cannot block Gateway heartbeats or create an unbounded outbound queue.
 
 ## Repository layout
 
 ```text
-src/main.rs       desktop harness
+src/main.rs       desktop Gateway harness
 src/lib.rs        public library surface
 src/gateway/      Discord Gateway transport, parser, heartbeat and reconnect logic
+src/rest.rs       bounded outbound Discord REST actor
 src/runtime.rs    low-overhead Tokio runtime configuration
-docs/architecture.md
+src/state.rs      bounded synchronous presentation cache
+docs/             architecture notes by chapter
 ```
 
 ## Security boundary
 
-Never hard-code or commit Discord credentials. The networking core treats the token as configuration only and does not log it.
+Never hard-code or commit Discord credentials. The Gateway and REST layers treat the token as configuration only and do not log it. REST redirects are disabled to avoid forwarding Authorization to another host.

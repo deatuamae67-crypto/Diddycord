@@ -1,10 +1,15 @@
 pub mod gateway;
+pub mod rest;
 pub mod runtime;
 pub mod state;
 
 pub use gateway::{
     FrontendEvent, FrontendMessage, FrontendMessageDelete, FrontendMessageUpdate, GatewayConfig,
     NetworkBackbone, DEFAULT_INTENTS,
+};
+pub use rest::{
+    RestBuildError, RestDispatcher, RestEvent, RestHandle, RestMessage, RestOperation,
+    RestSubmitError,
 };
 pub use runtime::{build_runtime, recommended_worker_threads};
 pub use state::{DrainReport, FrontendState};
