@@ -95,6 +95,15 @@ The project is intentionally split into small, bounded layers so networking neve
 - Malformed or over-limit payloads are rejected atomically rather than partially mutating the presentation cache.
 - Accepted IDs fan out through the existing bounded Gateway broadcast, so the network loop still cannot be blocked by a slow frontend or create an unbounded queue.
 
+### Chapter 12 — topology-driven cache invalidation
+
+- `FrontendState` now retires message timelines when their guild, channel, or thread disappears from the bounded navigation topology.
+- True `GUILD_DELETE` events purge known guild channel/thread timelines, while temporary `unavailable=true` events preserve both topology and messages.
+- Deleting a parent channel also purges active child-thread timelines; archived/deleted threads and stale `THREAD_LIST_SYNC` entries are removed immediately.
+- Refreshed `GUILD_CREATE` snapshots retire channels that disappeared from the replacement topology instead of waiting for message-cache LRU eviction.
+- A bounded FIFO of retired channel/thread snowflakes prevents late REST history responses or stale message events from resurrecting deleted timelines.
+- Active thread/create/sync events clear matching tombstones, allowing Discord threads to be unarchived under the same snowflake without losing subsequent messages.
+
 ## Authentication
 
 The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
@@ -203,7 +212,7 @@ src/gateway/      Discord Gateway transport, selective parsers, heartbeat, recon
 src/history.rs    selected-channel history paging state machine
 src/rest.rs       bounded Discord REST actor, outbound actions and message-history reads
 src/runtime.rs    low-overhead Tokio runtime configuration
-src/state.rs      bounded synchronous presentation cache and REST/Gateway/history convergence
+src/state.rs      bounded synchronous presentation cache and topology-driven invalidation
 src/topology.rs   bounded guild/channel/thread navigation state
 docs/             architecture notes by chapter
 ```

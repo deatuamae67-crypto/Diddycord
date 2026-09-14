@@ -34,6 +34,7 @@ impl ChannelTimeline {
 
 pub struct FrontendState {
     channels: HashMap<Box<str>, ChannelTimeline>,
+    retired_channels: VecDeque<Box<str>>,
     max_channels: usize,
     max_messages_per_channel: usize,
     clock: u64,
@@ -47,6 +48,7 @@ impl FrontendState {
     pub fn new(max_channels: usize, max_messages_per_channel: usize) -> Self {
         Self {
             channels: HashMap::with_capacity(max_channels.max(1).min(64)),
+            retired_channels: VecDeque::new(),
             max_channels: max_channels.max(1),
             max_messages_per_channel: max_messages_per_channel.max(1),
             clock: 0,
@@ -114,7 +116,9 @@ impl FrontendState {
     }
 
     pub fn apply(&mut self, event: Arc<FrontendEvent>) {
+        self.invalidate_topology_timelines(event.as_ref());
         if self.topology.apply(event.as_ref()) {
+            self.restore_topology_timelines(event.as_ref());
             return;
         }
 
@@ -123,9 +127,13 @@ impl FrontendState {
                 self.gateway_ready = true;
             }
             FrontendEvent::Message(message) => {
+                let channel_id = message.channel_id.as_ref();
+                if self.is_retired_channel(channel_id) {
+                    return;
+                }
+
                 self.clock = self.clock.saturating_add(1);
                 let touched = self.clock;
-                let channel_id = message.channel_id.as_ref();
 
                 if !self.channels.contains_key(channel_id) {
                     if self.channels.len() >= self.max_channels {
@@ -156,6 +164,10 @@ impl FrontendState {
                 timeline.messages.push_back(Arc::clone(&event));
             }
             FrontendEvent::MessageUpdate(update) => {
+                if self.is_retired_channel(update.channel_id.as_ref()) {
+                    return;
+                }
+
                 self.clock = self.clock.saturating_add(1);
                 let touched = self.clock;
                 let Some(timeline) = self.channels.get_mut(update.channel_id.as_ref()) else {
@@ -318,7 +330,145 @@ impl FrontendState {
         report
     }
 
+    fn invalidate_topology_timelines(&mut self, event: &FrontendEvent) {
+        let mut retired = Vec::<Box<str>>::new();
+
+        match event {
+            FrontendEvent::GuildCreate(snapshot) if !snapshot.unavailable => {
+                for channel in self.topology.channels(snapshot.id.as_ref()) {
+                    let still_exists = snapshot
+                        .channels
+                        .iter()
+                        .any(|incoming| incoming.id.as_ref() == channel.id.as_ref());
+                    if still_exists {
+                        continue;
+                    }
+
+                    retired.push(channel.id.clone());
+                    retired.extend(
+                        self.topology
+                            .threads_for_parent(snapshot.id.as_ref(), channel.id.as_ref())
+                            .map(|thread| thread.id.clone()),
+                    );
+                }
+            }
+            FrontendEvent::GuildDelete(delete) if !delete.unavailable => {
+                retired.extend(
+                    self.topology
+                        .channels(delete.id.as_ref())
+                        .map(|channel| channel.id.clone()),
+                );
+                retired.extend(
+                    self.topology
+                        .threads(delete.id.as_ref())
+                        .map(|thread| thread.id.clone()),
+                );
+            }
+            FrontendEvent::ChannelDelete(delete) => {
+                retired.push(delete.channel_id.clone());
+                retired.extend(
+                    self.topology
+                        .threads_for_parent(delete.guild_id.as_ref(), delete.channel_id.as_ref())
+                        .map(|thread| thread.id.clone()),
+                );
+            }
+            FrontendEvent::ThreadUpdate(thread) if thread.archived => {
+                retired.push(thread.id.clone());
+            }
+            FrontendEvent::ThreadDelete(delete) => {
+                retired.push(delete.id.clone());
+            }
+            FrontendEvent::ThreadListSync(sync) => {
+                for cached in self.topology.threads(sync.guild_id.as_ref()) {
+                    let in_scope = match sync.parent_channel_ids.as_ref() {
+                        Some(parent_ids) => cached
+                            .parent_id
+                            .as_deref()
+                            .map(|parent_id| parent_ids.iter().any(|id| id.as_ref() == parent_id))
+                            .unwrap_or(false),
+                        None => true,
+                    };
+                    if !in_scope {
+                        continue;
+                    }
+
+                    let remains_active = sync.threads.iter().any(|incoming| {
+                        !incoming.archived
+                            && incoming.guild_id.as_ref() == sync.guild_id.as_ref()
+                            && incoming.id.as_ref() == cached.id.as_ref()
+                    });
+                    if !remains_active {
+                        retired.push(cached.id.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        for channel_id in retired {
+            self.retire_channel(channel_id.as_ref());
+        }
+    }
+
+    fn restore_topology_timelines(&mut self, event: &FrontendEvent) {
+        match event {
+            FrontendEvent::GuildCreate(snapshot) if !snapshot.unavailable => {
+                for channel in &snapshot.channels {
+                    self.unretire_channel(channel.id.as_ref());
+                }
+            }
+            FrontendEvent::ChannelCreate(change) => {
+                self.unretire_channel(change.channel.id.as_ref());
+            }
+            FrontendEvent::ThreadCreate(thread) | FrontendEvent::ThreadUpdate(thread)
+                if !thread.archived =>
+            {
+                self.unretire_channel(thread.id.as_ref());
+            }
+            FrontendEvent::ThreadListSync(sync) => {
+                for thread in sync.threads.iter().filter(|thread| {
+                    !thread.archived && thread.guild_id.as_ref() == sync.guild_id.as_ref()
+                }) {
+                    self.unretire_channel(thread.id.as_ref());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn retire_channel(&mut self, channel_id: &str) {
+        self.channels.remove(channel_id);
+        if self
+            .retired_channels
+            .iter()
+            .any(|retired| retired.as_ref() == channel_id)
+        {
+            return;
+        }
+
+        let max_retired = self.max_channels.max(8);
+        if self.retired_channels.len() >= max_retired {
+            self.retired_channels.pop_front();
+        }
+        self.retired_channels
+            .push_back(Box::<str>::from(channel_id));
+    }
+
+    fn unretire_channel(&mut self, channel_id: &str) {
+        self.retired_channels
+            .retain(|retired| retired.as_ref() != channel_id);
+    }
+
+    fn is_retired_channel(&self, channel_id: &str) -> bool {
+        self.retired_channels
+            .iter()
+            .any(|retired| retired.as_ref() == channel_id)
+    }
+
     fn apply_history(&mut self, channel_id: &str, messages: &[RestMessage]) {
+        if self.is_retired_channel(channel_id) {
+            return;
+        }
         if !messages.iter().any(|message| {
             message.channel_id.as_ref() == channel_id && message.author_username.is_some()
         }) {
@@ -427,7 +577,10 @@ fn snowflake_cmp(left: &str, right: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FrontendGuildSnapshot, RestOperation};
+    use crate::{
+        FrontendChannel, FrontendChannelDelete, FrontendGuildDelete, FrontendGuildSnapshot,
+        FrontendThread, FrontendThreadListSync, RestOperation,
+    };
 
     fn message(id: &str, channel_id: &str, content: &str) -> Arc<FrontendEvent> {
         Arc::new(FrontendEvent::Message(FrontendMessage {
@@ -445,6 +598,40 @@ mod tests {
             author_username: Some(Box::<str>::from("tester")),
             content: Box::<str>::from(content),
         }
+    }
+
+    fn topology_channel(id: &str, name: &str) -> FrontendChannel {
+        FrontendChannel {
+            id: Box::<str>::from(id),
+            name: Some(Box::<str>::from(name)),
+            kind: 0,
+            position: 0,
+            parent_id: None,
+        }
+    }
+
+    fn topology_thread(id: &str, guild_id: &str, parent_id: &str) -> FrontendThread {
+        FrontendThread {
+            id: Box::<str>::from(id),
+            guild_id: Box::<str>::from(guild_id),
+            parent_id: Some(Box::<str>::from(parent_id)),
+            name: Some(Box::<str>::from("thread")),
+            kind: 11,
+            archived: false,
+            locked: false,
+        }
+    }
+
+    fn guild_snapshot(guild_id: &str, channel_ids: &[&str]) -> Arc<FrontendEvent> {
+        Arc::new(FrontendEvent::GuildCreate(FrontendGuildSnapshot {
+            id: Box::<str>::from(guild_id),
+            name: Box::<str>::from("guild"),
+            unavailable: false,
+            channels: channel_ids
+                .iter()
+                .map(|id| topology_channel(id, id))
+                .collect(),
+        }))
     }
 
     #[test]
@@ -714,5 +901,120 @@ mod tests {
         assert!(report.lagged >= 1);
         assert_eq!(state.dropped_rest_events(), report.lagged);
         assert_eq!(state.dropped_gateway_events(), 0);
+    }
+
+    #[test]
+    fn channel_delete_purges_parent_and_child_thread_timelines() {
+        let mut state = FrontendState::new(8, 8);
+        state.apply(guild_snapshot("1", &["10"]));
+        state.apply(Arc::new(FrontendEvent::ThreadCreate(topology_thread(
+            "30", "1", "10",
+        ))));
+        state.apply(message("100", "10", "parent"));
+        state.apply(message("101", "30", "thread"));
+
+        state.apply(Arc::new(FrontendEvent::ChannelDelete(
+            FrontendChannelDelete {
+                guild_id: Box::<str>::from("1"),
+                channel_id: Box::<str>::from("10"),
+            },
+        )));
+
+        assert_eq!(state.channel_message_count("10"), 0);
+        assert_eq!(state.channel_message_count("30"), 0);
+        assert_eq!(state.cached_channel_count(), 0);
+
+        state.apply_rest(&RestEvent::MessagesFetched {
+            request_id: 20,
+            channel_id: Box::<str>::from("10"),
+            messages: vec![rest_message("99", "10", "late history")],
+        });
+        assert_eq!(state.channel_message_count("10"), 0);
+    }
+
+    #[test]
+    fn temporary_guild_unavailability_preserves_cache_but_true_delete_purges_it() {
+        let mut state = FrontendState::new(8, 8);
+        state.apply(guild_snapshot("1", &["10"]));
+        state.apply(Arc::new(FrontendEvent::ThreadCreate(topology_thread(
+            "30", "1", "10",
+        ))));
+        state.apply(message("100", "10", "parent"));
+        state.apply(message("101", "30", "thread"));
+
+        state.apply(Arc::new(FrontendEvent::GuildDelete(FrontendGuildDelete {
+            id: Box::<str>::from("1"),
+            unavailable: true,
+        })));
+        assert_eq!(state.channel_message_count("10"), 1);
+        assert_eq!(state.channel_message_count("30"), 1);
+
+        state.apply(Arc::new(FrontendEvent::GuildDelete(FrontendGuildDelete {
+            id: Box::<str>::from("1"),
+            unavailable: false,
+        })));
+        assert_eq!(state.channel_message_count("10"), 0);
+        assert_eq!(state.channel_message_count("30"), 0);
+    }
+
+    #[test]
+    fn thread_sync_purges_only_threads_removed_from_the_sync_scope() {
+        let mut state = FrontendState::new(8, 8);
+        state.apply(guild_snapshot("1", &["10"]));
+        let first = topology_thread("30", "1", "10");
+        let second = topology_thread("31", "1", "10");
+        state.apply(Arc::new(FrontendEvent::ThreadCreate(first.clone())));
+        state.apply(Arc::new(FrontendEvent::ThreadCreate(second.clone())));
+        state.apply(message("100", "30", "old"));
+        state.apply(message("101", "31", "keep"));
+
+        state.apply(Arc::new(FrontendEvent::ThreadListSync(
+            FrontendThreadListSync {
+                guild_id: Box::<str>::from("1"),
+                parent_channel_ids: None,
+                threads: vec![second],
+            },
+        )));
+
+        assert_eq!(state.channel_message_count("30"), 0);
+        assert_eq!(state.channel_message_count("31"), 1);
+    }
+
+    #[test]
+    fn archived_thread_is_retired_until_it_becomes_active_again() {
+        let mut state = FrontendState::new(8, 8);
+        state.apply(guild_snapshot("1", &["10"]));
+        let thread = topology_thread("30", "1", "10");
+        state.apply(Arc::new(FrontendEvent::ThreadCreate(thread.clone())));
+        state.apply(message("100", "30", "before archive"));
+
+        let mut archived = thread.clone();
+        archived.archived = true;
+        state.apply(Arc::new(FrontendEvent::ThreadUpdate(archived)));
+        assert_eq!(state.channel_message_count("30"), 0);
+
+        state.apply_rest(&RestEvent::MessagesFetched {
+            request_id: 21,
+            channel_id: Box::<str>::from("30"),
+            messages: vec![rest_message("90", "30", "late history")],
+        });
+        assert_eq!(state.channel_message_count("30"), 0);
+
+        state.apply(Arc::new(FrontendEvent::ThreadUpdate(thread)));
+        state.apply(message("101", "30", "active again"));
+        assert_eq!(state.channel_message_count("30"), 1);
+    }
+
+    #[test]
+    fn refreshed_guild_snapshot_retires_channels_that_disappeared() {
+        let mut state = FrontendState::new(8, 8);
+        state.apply(guild_snapshot("1", &["10", "11"]));
+        state.apply(message("100", "10", "removed"));
+        state.apply(message("101", "11", "kept"));
+
+        state.apply(guild_snapshot("1", &["11"]));
+
+        assert_eq!(state.channel_message_count("10"), 0);
+        assert_eq!(state.channel_message_count("11"), 1);
     }
 }
