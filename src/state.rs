@@ -6,7 +6,8 @@ use std::{
 use tokio::sync::broadcast::{self, error::TryRecvError};
 
 use crate::{
-    FrontendEvent, FrontendMessage, FrontendMessageDelete, FrontendMessageUpdate, RestEvent,
+    topology::TopologyState, FrontendEvent, FrontendMessage, FrontendMessageDelete,
+    FrontendMessageUpdate, RestEvent,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -38,6 +39,7 @@ pub struct FrontendState {
     gateway_ready: bool,
     dropped_gateway_events: u64,
     dropped_rest_events: u64,
+    topology: TopologyState,
 }
 
 impl FrontendState {
@@ -50,11 +52,27 @@ impl FrontendState {
             gateway_ready: false,
             dropped_gateway_events: 0,
             dropped_rest_events: 0,
+            topology: TopologyState::default(),
         }
+    }
+
+    pub fn with_topology_limits(
+        max_channels: usize,
+        max_messages_per_channel: usize,
+        max_guilds: usize,
+        max_channels_per_guild: usize,
+    ) -> Self {
+        let mut state = Self::new(max_channels, max_messages_per_channel);
+        state.topology = TopologyState::new(max_guilds, max_channels_per_guild);
+        state
     }
 
     pub fn gateway_ready(&self) -> bool {
         self.gateway_ready
+    }
+
+    pub fn topology(&self) -> &TopologyState {
+        &self.topology
     }
 
     pub fn cached_channel_count(&self) -> usize {
@@ -95,6 +113,10 @@ impl FrontendState {
     }
 
     pub fn apply(&mut self, event: Arc<FrontendEvent>) {
+        if self.topology.apply(event.as_ref()) {
+            return;
+        }
+
         match event.as_ref() {
             FrontendEvent::GatewayReady | FrontendEvent::GatewayResumed => {
                 self.gateway_ready = true;
@@ -180,6 +202,7 @@ impl FrontendState {
                         .unwrap_or(true)
                 });
             }
+            _ => {}
         }
     }
 
@@ -314,17 +337,14 @@ impl FrontendState {
 fn frontend_message(event: &Arc<FrontendEvent>) -> Option<&FrontendMessage> {
     match event.as_ref() {
         FrontendEvent::Message(message) => Some(message),
-        FrontendEvent::GatewayReady
-        | FrontendEvent::GatewayResumed
-        | FrontendEvent::MessageUpdate(_)
-        | FrontendEvent::MessageDelete(_) => None,
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RestMessage, RestOperation};
+    use crate::{FrontendGuildSnapshot, RestMessage, RestOperation};
 
     fn message(id: &str, channel_id: &str, content: &str) -> Arc<FrontendEvent> {
         Arc::new(FrontendEvent::Message(FrontendMessage {
@@ -421,6 +441,27 @@ mod tests {
         assert!(!state.gateway_ready());
         state.apply(Arc::new(FrontendEvent::GatewayReady));
         assert!(state.gateway_ready());
+    }
+
+    #[test]
+    fn topology_events_flow_through_the_same_gateway_drain() {
+        let (sender, mut receiver) = broadcast::channel(8);
+        sender
+            .send(Arc::new(FrontendEvent::GuildCreate(
+                FrontendGuildSnapshot {
+                    id: Box::<str>::from("guild"),
+                    name: Box::<str>::from("name"),
+                    unavailable: false,
+                    channels: Vec::new(),
+                },
+            )))
+            .unwrap();
+
+        let mut state = FrontendState::new(8, 8);
+        let report = state.drain(&mut receiver, 8);
+        assert_eq!(report.applied, 1);
+        assert_eq!(state.topology().guild_count(), 1);
+        assert_eq!(state.topology().guild("guild").unwrap().name, "name");
     }
 
     #[test]
