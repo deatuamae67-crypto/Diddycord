@@ -212,7 +212,7 @@ struct GuildThread<'a> {
     name: Option<&'a str>,
     #[serde(rename = "type")]
     kind: u8,
-    #[serde(default, borrow)]
+    #[serde(default)]
     thread_metadata: Option<ThreadMetadata>,
 }
 
@@ -260,7 +260,7 @@ struct ThreadChange<'a> {
     name: Option<&'a str>,
     #[serde(rename = "type")]
     kind: u8,
-    #[serde(default, borrow)]
+    #[serde(default)]
     thread_metadata: Option<ThreadMetadata>,
 }
 
@@ -480,17 +480,11 @@ pub(super) fn emit_channel_delete(
     );
 }
 
-pub(super) fn emit_thread_create(
-    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
-    raw: &RawValue,
-) {
+pub(super) fn emit_thread_create(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
     emit_thread_change(frontend, raw, false);
 }
 
-pub(super) fn emit_thread_update(
-    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
-    raw: &RawValue,
-) {
+pub(super) fn emit_thread_update(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
     emit_thread_change(frontend, raw, true);
 }
 
@@ -513,10 +507,7 @@ fn emit_thread_change(
     );
 }
 
-pub(super) fn emit_thread_delete(
-    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
-    raw: &RawValue,
-) {
+pub(super) fn emit_thread_delete(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
     let Ok(thread) = serde_json::from_str::<ThreadDelete<'_>>(raw.get()) else {
         return;
     };
@@ -543,11 +534,9 @@ pub(super) fn emit_thread_list_sync(
         frontend,
         FrontendEvent::ThreadListSync(FrontendThreadListSync {
             guild_id: Box::<str>::from(sync.guild_id),
-            parent_channel_ids: sync.channel_ids.map(|ids| {
-                ids.into_iter()
-                    .map(Box::<str>::from)
-                    .collect::<Vec<_>>()
-            }),
+            parent_channel_ids: sync
+                .channel_ids
+                .map(|ids| ids.into_iter().map(Box::<str>::from).collect::<Vec<_>>()),
             threads: sync.threads.into_iter().map(frontend_thread).collect(),
         }),
     );

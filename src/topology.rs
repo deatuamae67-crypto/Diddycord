@@ -46,11 +46,7 @@ impl Default for TopologyState {
 
 impl TopologyState {
     pub fn new(max_guilds: usize, max_channels_per_guild: usize) -> Self {
-        Self::with_limits(
-            max_guilds,
-            max_channels_per_guild,
-            max_channels_per_guild,
-        )
+        Self::with_limits(max_guilds, max_channels_per_guild, max_channels_per_guild)
     }
 
     pub fn with_limits(
@@ -129,9 +125,8 @@ impl TopologyState {
         guild_id: &'a str,
         parent_channel_id: &'a str,
     ) -> impl Iterator<Item = &'a FrontendThread> + 'a {
-        self.threads(guild_id).filter(move |thread| {
-            thread.parent_id.as_deref() == Some(parent_channel_id)
-        })
+        self.threads(guild_id)
+            .filter(move |thread| thread.parent_id.as_deref() == Some(parent_channel_id))
     }
 
     pub fn thread(&self, guild_id: &str, thread_id: &str) -> Option<&FrontendThread> {
@@ -529,7 +524,9 @@ mod tests {
         state.apply(&guild("1", "one", vec![channel("10", "parent", 0)]));
         state.apply(&FrontendEvent::ThreadCreate(thread("30", "1", "10", "one")));
         state.apply(&FrontendEvent::ThreadCreate(thread("31", "1", "10", "two")));
-        state.apply(&FrontendEvent::ThreadCreate(thread("32", "1", "10", "dropped")));
+        state.apply(&FrontendEvent::ThreadCreate(thread(
+            "32", "1", "10", "dropped",
+        )));
 
         assert_eq!(state.guild("1").unwrap().thread_count, 2);
         assert!(state.thread("1", "32").is_none());
@@ -538,7 +535,10 @@ mod tests {
         let mut updated = thread("30", "1", "10", "renamed");
         updated.locked = true;
         state.apply(&FrontendEvent::ThreadUpdate(updated));
-        assert_eq!(state.thread("1", "30").unwrap().name.as_deref(), Some("renamed"));
+        assert_eq!(
+            state.thread("1", "30").unwrap().name.as_deref(),
+            Some("renamed")
+        );
         assert!(state.thread("1", "30").unwrap().locked);
 
         state.apply(&FrontendEvent::ThreadDelete(FrontendThreadDelete {
@@ -553,7 +553,9 @@ mod tests {
     fn archived_thread_update_removes_it_from_active_navigation() {
         let mut state = TopologyState::new(4, 8);
         state.apply(&guild("1", "one", vec![channel("10", "parent", 0)]));
-        state.apply(&FrontendEvent::ThreadCreate(thread("30", "1", "10", "topic")));
+        state.apply(&FrontendEvent::ThreadCreate(thread(
+            "30", "1", "10", "topic",
+        )));
 
         let mut archived = thread("30", "1", "10", "topic");
         archived.archived = true;
@@ -570,8 +572,12 @@ mod tests {
             "one",
             vec![channel("10", "a", 0), channel("11", "b", 1)],
         ));
-        state.apply(&FrontendEvent::ThreadCreate(thread("30", "1", "10", "old-a")));
-        state.apply(&FrontendEvent::ThreadCreate(thread("31", "1", "11", "keep-b")));
+        state.apply(&FrontendEvent::ThreadCreate(thread(
+            "30", "1", "10", "old-a",
+        )));
+        state.apply(&FrontendEvent::ThreadCreate(thread(
+            "31", "1", "11", "keep-b",
+        )));
 
         state.apply(&FrontendEvent::ThreadListSync(FrontendThreadListSync {
             guild_id: Box::<str>::from("1"),
@@ -589,7 +595,9 @@ mod tests {
     fn deleting_parent_channel_also_drops_its_active_threads() {
         let mut state = TopologyState::new(4, 8);
         state.apply(&guild("1", "one", vec![channel("10", "parent", 0)]));
-        state.apply(&FrontendEvent::ThreadCreate(thread("30", "1", "10", "topic")));
+        state.apply(&FrontendEvent::ThreadCreate(thread(
+            "30", "1", "10", "topic",
+        )));
 
         state.apply(&FrontendEvent::ChannelDelete(FrontendChannelDelete {
             guild_id: Box::<str>::from("1"),
@@ -604,7 +612,9 @@ mod tests {
     fn unavailable_delete_preserves_topology_but_true_delete_removes_it() {
         let mut state = TopologyState::new(4, 8);
         state.apply(&guild("1", "one", vec![channel("10", "a", 0)]));
-        state.apply(&FrontendEvent::ThreadCreate(thread("30", "1", "10", "topic")));
+        state.apply(&FrontendEvent::ThreadCreate(thread(
+            "30", "1", "10", "topic",
+        )));
         state.apply(&FrontendEvent::GuildDelete(FrontendGuildDelete {
             id: Box::<str>::from("1"),
             unavailable: true,
@@ -640,7 +650,9 @@ mod tests {
     fn least_recently_used_guild_is_evicted_at_capacity() {
         let mut state = TopologyState::new(2, 4);
         state.apply(&guild("1", "one", vec![channel("10", "a", 0)]));
-        state.apply(&FrontendEvent::ThreadCreate(thread("30", "1", "10", "topic")));
+        state.apply(&FrontendEvent::ThreadCreate(thread(
+            "30", "1", "10", "topic",
+        )));
         state.apply(&guild("2", "two", vec![]));
         state.apply(&FrontendEvent::GuildUpdate(FrontendGuildUpdate {
             id: Box::<str>::from("1"),
