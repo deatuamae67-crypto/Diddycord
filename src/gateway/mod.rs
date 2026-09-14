@@ -10,7 +10,8 @@ mod recovery;
 pub use events::{
     FrontendChannel, FrontendChannelChange, FrontendChannelDelete, FrontendEvent,
     FrontendGuildDelete, FrontendGuildSnapshot, FrontendGuildUpdate, FrontendMessage,
-    FrontendMessageDelete, FrontendMessageUpdate,
+    FrontendMessageDelete, FrontendMessageUpdate, FrontendThread, FrontendThreadDelete,
+    FrontendThreadListSync,
 };
 use recovery::{reconnect_delay, AuthMode, ConnectionNext, SessionState};
 

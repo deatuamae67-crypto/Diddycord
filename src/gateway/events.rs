@@ -35,6 +35,31 @@ pub struct FrontendChannel {
     pub parent_id: Option<Box<str>>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendThread {
+    pub id: Box<str>,
+    pub guild_id: Box<str>,
+    pub parent_id: Option<Box<str>>,
+    pub name: Option<Box<str>>,
+    pub kind: u8,
+    pub archived: bool,
+    pub locked: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FrontendThreadDelete {
+    pub id: Box<str>,
+    pub guild_id: Box<str>,
+    pub parent_id: Option<Box<str>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FrontendThreadListSync {
+    pub guild_id: Box<str>,
+    pub parent_channel_ids: Option<Vec<Box<str>>>,
+    pub threads: Vec<FrontendThread>,
+}
+
 #[derive(Clone, Debug)]
 pub struct FrontendGuildSnapshot {
     pub id: Box<str>,
@@ -81,6 +106,10 @@ pub enum FrontendEvent {
     ChannelCreate(FrontendChannelChange),
     ChannelUpdate(FrontendChannelChange),
     ChannelDelete(FrontendChannelDelete),
+    ThreadCreate(FrontendThread),
+    ThreadUpdate(FrontendThread),
+    ThreadDelete(FrontendThreadDelete),
+    ThreadListSync(FrontendThreadListSync),
 }
 
 #[derive(Deserialize)]
@@ -137,6 +166,8 @@ struct GuildCreate<'a> {
     unavailable: bool,
     #[serde(default, borrow)]
     channels: Vec<GuildChannel<'a>>,
+    #[serde(default, borrow)]
+    threads: Vec<GuildThread<'a>>,
 }
 
 #[derive(Deserialize)]
@@ -172,6 +203,28 @@ struct GuildChannel<'a> {
 }
 
 #[derive(Deserialize)]
+struct GuildThread<'a> {
+    #[serde(borrow)]
+    id: &'a str,
+    #[serde(default, borrow)]
+    parent_id: Option<&'a str>,
+    #[serde(default, borrow)]
+    name: Option<&'a str>,
+    #[serde(rename = "type")]
+    kind: u8,
+    #[serde(default)]
+    thread_metadata: Option<ThreadMetadata>,
+}
+
+#[derive(Deserialize)]
+struct ThreadMetadata {
+    #[serde(default)]
+    archived: bool,
+    #[serde(default)]
+    locked: bool,
+}
+
+#[derive(Deserialize)]
 struct ChannelChange<'a> {
     #[serde(borrow)]
     id: &'a str,
@@ -193,6 +246,42 @@ struct ChannelDelete<'a> {
     id: &'a str,
     #[serde(borrow)]
     guild_id: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ThreadChange<'a> {
+    #[serde(borrow)]
+    id: &'a str,
+    #[serde(borrow)]
+    guild_id: &'a str,
+    #[serde(default, borrow)]
+    parent_id: Option<&'a str>,
+    #[serde(default, borrow)]
+    name: Option<&'a str>,
+    #[serde(rename = "type")]
+    kind: u8,
+    #[serde(default)]
+    thread_metadata: Option<ThreadMetadata>,
+}
+
+#[derive(Deserialize)]
+struct ThreadDelete<'a> {
+    #[serde(borrow)]
+    id: &'a str,
+    #[serde(borrow)]
+    guild_id: &'a str,
+    #[serde(default, borrow)]
+    parent_id: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct ThreadListSync<'a> {
+    #[serde(borrow)]
+    guild_id: &'a str,
+    #[serde(default, borrow)]
+    channel_ids: Option<Vec<&'a str>>,
+    #[serde(default, borrow)]
+    threads: Vec<ThreadChange<'a>>,
 }
 
 pub(super) fn emit(frontend: &broadcast::Sender<Arc<FrontendEvent>>, event: FrontendEvent) {
@@ -272,16 +361,33 @@ pub(super) fn emit_guild_create(frontend: &broadcast::Sender<Arc<FrontendEvent>>
         .into_iter()
         .map(frontend_channel)
         .collect::<Vec<_>>();
+    let guild_id = Box::<str>::from(guild.id);
+    let threads = guild
+        .threads
+        .into_iter()
+        .map(|thread| frontend_guild_thread(guild.id, thread))
+        .collect::<Vec<_>>();
 
     emit(
         frontend,
         FrontendEvent::GuildCreate(FrontendGuildSnapshot {
-            id: Box::<str>::from(guild.id),
+            id: guild_id.clone(),
             name: Box::<str>::from(guild.name),
             unavailable: guild.unavailable,
             channels,
         }),
     );
+
+    if !guild.unavailable {
+        emit(
+            frontend,
+            FrontendEvent::ThreadListSync(FrontendThreadListSync {
+                guild_id,
+                parent_channel_ids: None,
+                threads,
+            }),
+        );
+    }
 }
 
 pub(super) fn emit_guild_update(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
@@ -374,6 +480,68 @@ pub(super) fn emit_channel_delete(
     );
 }
 
+pub(super) fn emit_thread_create(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
+    emit_thread_change(frontend, raw, false);
+}
+
+pub(super) fn emit_thread_update(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
+    emit_thread_change(frontend, raw, true);
+}
+
+fn emit_thread_change(
+    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
+    raw: &RawValue,
+    update: bool,
+) {
+    let Ok(thread) = serde_json::from_str::<ThreadChange<'_>>(raw.get()) else {
+        return;
+    };
+    let event = frontend_thread(thread);
+    emit(
+        frontend,
+        if update {
+            FrontendEvent::ThreadUpdate(event)
+        } else {
+            FrontendEvent::ThreadCreate(event)
+        },
+    );
+}
+
+pub(super) fn emit_thread_delete(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
+    let Ok(thread) = serde_json::from_str::<ThreadDelete<'_>>(raw.get()) else {
+        return;
+    };
+
+    emit(
+        frontend,
+        FrontendEvent::ThreadDelete(FrontendThreadDelete {
+            id: Box::<str>::from(thread.id),
+            guild_id: Box::<str>::from(thread.guild_id),
+            parent_id: thread.parent_id.map(Box::<str>::from),
+        }),
+    );
+}
+
+pub(super) fn emit_thread_list_sync(
+    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
+    raw: &RawValue,
+) {
+    let Ok(sync) = serde_json::from_str::<ThreadListSync<'_>>(raw.get()) else {
+        return;
+    };
+
+    emit(
+        frontend,
+        FrontendEvent::ThreadListSync(FrontendThreadListSync {
+            guild_id: Box::<str>::from(sync.guild_id),
+            parent_channel_ids: sync
+                .channel_ids
+                .map(|ids| ids.into_iter().map(Box::<str>::from).collect::<Vec<_>>()),
+            threads: sync.threads.into_iter().map(frontend_thread).collect(),
+        }),
+    );
+}
+
 fn frontend_channel(channel: GuildChannel<'_>) -> FrontendChannel {
     FrontendChannel {
         id: Box::<str>::from(channel.id),
@@ -381,6 +549,38 @@ fn frontend_channel(channel: GuildChannel<'_>) -> FrontendChannel {
         kind: channel.kind,
         position: channel.position,
         parent_id: channel.parent_id.map(Box::<str>::from),
+    }
+}
+
+fn frontend_guild_thread(guild_id: &str, thread: GuildThread<'_>) -> FrontendThread {
+    let metadata = thread.thread_metadata.unwrap_or(ThreadMetadata {
+        archived: false,
+        locked: false,
+    });
+    FrontendThread {
+        id: Box::<str>::from(thread.id),
+        guild_id: Box::<str>::from(guild_id),
+        parent_id: thread.parent_id.map(Box::<str>::from),
+        name: thread.name.map(Box::<str>::from),
+        kind: thread.kind,
+        archived: metadata.archived,
+        locked: metadata.locked,
+    }
+}
+
+fn frontend_thread(thread: ThreadChange<'_>) -> FrontendThread {
+    let metadata = thread.thread_metadata.unwrap_or(ThreadMetadata {
+        archived: false,
+        locked: false,
+    });
+    FrontendThread {
+        id: Box::<str>::from(thread.id),
+        guild_id: Box::<str>::from(thread.guild_id),
+        parent_id: thread.parent_id.map(Box::<str>::from),
+        name: thread.name.map(Box::<str>::from),
+        kind: thread.kind,
+        archived: metadata.archived,
+        locked: metadata.locked,
     }
 }
 
@@ -442,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn guild_create_parser_ignores_members_roles_and_emojis() {
+    fn guild_create_parser_ignores_members_roles_and_emojis_and_emits_threads() {
         let json = r#"{
             "id":"999",
             "name":"tiny guild",
@@ -450,6 +650,9 @@ mod tests {
             "channels":[
                 {"id":"10","name":"general","type":0,"position":1,"parent_id":null,"permission_overwrites":[{"id":"1"}]},
                 {"id":"11","name":"voice","type":2,"position":2,"parent_id":"12","bitrate":96000}
+            ],
+            "threads":[
+                {"id":"30","name":"topic","type":11,"parent_id":"10","thread_metadata":{"archived":false,"locked":true,"auto_archive_duration":1440}}
             ],
             "members":[{"user":{"id":"500","username":"ignored"},"roles":["1","2"]}],
             "roles":[{"id":"1","name":"ignored"}],
@@ -471,6 +674,19 @@ mod tests {
                 assert_eq!(guild.channels[0].name.as_deref(), Some("general"));
                 assert_eq!(guild.channels[0].kind, 0);
                 assert_eq!(guild.channels[1].parent_id.as_deref(), Some("12"));
+            }
+            _ => panic!("unexpected event"),
+        }
+
+        let event = rx.try_recv().unwrap();
+        match event.as_ref() {
+            FrontendEvent::ThreadListSync(sync) => {
+                assert_eq!(sync.guild_id.as_ref(), "999");
+                assert!(sync.parent_channel_ids.is_none());
+                assert_eq!(sync.threads.len(), 1);
+                assert_eq!(sync.threads[0].id.as_ref(), "30");
+                assert_eq!(sync.threads[0].parent_id.as_deref(), Some("10"));
+                assert!(sync.threads[0].locked);
             }
             _ => panic!("unexpected event"),
         }
@@ -500,6 +716,64 @@ mod tests {
                 assert_eq!(change.channel.name.as_deref(), Some("renamed"));
                 assert_eq!(change.channel.position, 4);
                 assert_eq!(change.channel.parent_id.as_deref(), Some("12"));
+            }
+            _ => panic!("unexpected event"),
+        }
+    }
+
+    #[test]
+    fn thread_update_parser_keeps_navigation_and_archive_fields() {
+        let json = r#"{
+            "id":"30",
+            "guild_id":"999",
+            "parent_id":"10",
+            "name":"renamed topic",
+            "type":11,
+            "thread_metadata":{"archived":true,"locked":false,"auto_archive_duration":60},
+            "member_count":47,
+            "message_count":5000,
+            "rate_limit_per_user":5
+        }"#;
+        let raw: &RawValue = serde_json::from_str(json).unwrap();
+        let (tx, mut rx) = broadcast::channel(8);
+        emit_thread_update(&tx, raw);
+
+        let event = rx.try_recv().unwrap();
+        match event.as_ref() {
+            FrontendEvent::ThreadUpdate(thread) => {
+                assert_eq!(thread.id.as_ref(), "30");
+                assert_eq!(thread.guild_id.as_ref(), "999");
+                assert_eq!(thread.parent_id.as_deref(), Some("10"));
+                assert_eq!(thread.name.as_deref(), Some("renamed topic"));
+                assert!(thread.archived);
+                assert!(!thread.locked);
+            }
+            _ => panic!("unexpected event"),
+        }
+    }
+
+    #[test]
+    fn thread_list_sync_keeps_parent_scope_and_skips_members() {
+        let json = r#"{
+            "guild_id":"999",
+            "channel_ids":["10","11"],
+            "threads":[
+                {"id":"30","guild_id":"999","parent_id":"10","name":"one","type":11,"thread_metadata":{"archived":false,"locked":false}},
+                {"id":"31","guild_id":"999","parent_id":"11","name":"two","type":12,"thread_metadata":{"archived":false,"locked":true}}
+            ],
+            "members":[{"id":"30","user_id":"500","join_timestamp":"ignored","flags":0}]
+        }"#;
+        let raw: &RawValue = serde_json::from_str(json).unwrap();
+        let (tx, mut rx) = broadcast::channel(8);
+        emit_thread_list_sync(&tx, raw);
+
+        let event = rx.try_recv().unwrap();
+        match event.as_ref() {
+            FrontendEvent::ThreadListSync(sync) => {
+                assert_eq!(sync.parent_channel_ids.as_ref().unwrap().len(), 2);
+                assert_eq!(sync.threads.len(), 2);
+                assert_eq!(sync.threads[1].id.as_ref(), "31");
+                assert!(sync.threads[1].locked);
             }
             _ => panic!("unexpected event"),
         }

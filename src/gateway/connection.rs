@@ -9,7 +9,8 @@ use super::{
     events::{
         emit, emit_channel_create, emit_channel_delete, emit_channel_update, emit_guild_create,
         emit_guild_delete, emit_guild_update, emit_message_create, emit_message_delete,
-        emit_message_update,
+        emit_message_update, emit_thread_create, emit_thread_delete, emit_thread_list_sync,
+        emit_thread_update,
     },
     protocol::{
         receive_hello, send_heartbeat, send_identify, send_resume, GatewayEnvelope, ReadyData,
@@ -180,6 +181,34 @@ impl NetworkBackbone {
                                     if self.frontend.receiver_count() != 0 {
                                         if let Some(raw) = envelope.d {
                                             emit_channel_delete(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("THREAD_CREATE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_thread_create(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("THREAD_UPDATE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_thread_update(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("THREAD_DELETE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_thread_delete(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("THREAD_LIST_SYNC") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_thread_list_sync(&self.frontend, raw);
                                         }
                                     }
                                 }
