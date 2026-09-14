@@ -154,7 +154,12 @@ impl FrontendState {
     }
 
     fn evict_least_recently_used_channel(&mut self) {
-        let Some(oldest) = self.channels.values().map(|timeline| timeline.touched).min() else {
+        let Some(oldest) = self
+            .channels
+            .values()
+            .map(|timeline| timeline.touched)
+            .min()
+        else {
             return;
         };
 
