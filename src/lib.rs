@@ -9,7 +9,8 @@ pub use gateway::{
     FrontendChannel, FrontendChannelChange, FrontendChannelDelete, FrontendEvent,
     FrontendGuildDelete, FrontendGuildSnapshot, FrontendGuildUpdate, FrontendMessage,
     FrontendMessageDelete, FrontendMessageUpdate, FrontendThread, FrontendThreadDelete,
-    FrontendThreadListSync, GatewayConfig, NetworkBackbone, DEFAULT_INTENTS,
+    FrontendThreadListSync, GatewayConfig, NetworkBackbone, NetworkControl, NetworkStatus,
+    DEFAULT_INTENTS,
 };
 pub use history::{HistoryCompletion, HistoryLoadStatus, HistoryPager};
 pub use rest::{
