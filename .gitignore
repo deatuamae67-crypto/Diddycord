@@ -1,0 +1,9 @@
+/target/
+.env
+.env.*
+!.env.example
+*.pdb
+*.dSYM/
+.idea/
+.vscode/
+.DS_Store
