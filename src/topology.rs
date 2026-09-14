@@ -302,7 +302,11 @@ mod tests {
         state.apply(&guild(
             "1",
             "one",
-            vec![channel("10", "a", 0), channel("11", "b", 1), channel("12", "c", 2)],
+            vec![
+                channel("10", "a", 0),
+                channel("11", "b", 1),
+                channel("12", "c", 2),
+            ],
         ));
 
         assert_eq!(state.guild_count(), 1);
@@ -320,7 +324,10 @@ mod tests {
             guild_id: Box::<str>::from("1"),
             channel: channel("10", "new", 4),
         }));
-        assert_eq!(state.channel("1", "10").unwrap().name.as_deref(), Some("new"));
+        assert_eq!(
+            state.channel("1", "10").unwrap().name.as_deref(),
+            Some("new")
+        );
         assert_eq!(state.channel("1", "10").unwrap().position, 4);
 
         state.apply(&FrontendEvent::ChannelCreate(FrontendChannelChange {
