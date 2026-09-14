@@ -169,7 +169,9 @@ impl HistoryPager {
     }
 
     pub fn pending_before(&self) -> Option<&str> {
-        self.pending.as_ref().and_then(|pending| pending.before.as_deref())
+        self.pending
+            .as_ref()
+            .and_then(|pending| pending.before.as_deref())
     }
 }
 
@@ -183,9 +185,7 @@ impl Default for HistoryPager {
 mod tests {
     use std::sync::Arc;
 
-    use crate::{
-        FrontendEvent, FrontendMessage, RestDispatcher, RestMessage, RestOperation,
-    };
+    use crate::{FrontendEvent, FrontendMessage, RestDispatcher, RestMessage, RestOperation};
 
     use super::*;
 
@@ -239,7 +239,10 @@ mod tests {
             pager.try_load_latest(&rest).unwrap(),
             HistoryLoadStatus::Submitted(_)
         ));
-        assert_eq!(pager.try_load_latest(&rest).unwrap(), HistoryLoadStatus::Busy);
+        assert_eq!(
+            pager.try_load_latest(&rest).unwrap(),
+            HistoryLoadStatus::Busy
+        );
     }
 
     #[test]
