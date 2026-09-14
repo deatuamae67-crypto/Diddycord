@@ -103,9 +103,7 @@ pub(super) async fn receive_hello(socket: &mut GatewaySocket) -> Result<Duration
 
                 return Ok(Duration::from_millis(hello.heartbeat_interval));
             }
-            Message::Close(_) => {
-                return Err(io_error("Discord Gateway closed before HELLO").into())
-            }
+            Message::Close(_) => return Err(io_error("Discord Gateway closed before HELLO").into()),
             Message::Ping(_) | Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
         }
     }

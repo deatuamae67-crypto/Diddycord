@@ -40,10 +40,7 @@ pub(super) fn emit(frontend: &broadcast::Sender<Arc<FrontendEvent>>, event: Fron
     }
 }
 
-pub(super) fn emit_message(
-    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
-    raw: &RawValue,
-) {
+pub(super) fn emit_message(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
     let Ok(message) = serde_json::from_str::<MessageCreate<'_>>(raw.get()) else {
         return;
     };

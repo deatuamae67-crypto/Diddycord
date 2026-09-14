@@ -121,7 +121,10 @@ mod tests {
         let resumable = resumable_session();
         assert_eq!(classify_close(1006, &resumable), ConnectionNext::Resume);
         assert_eq!(classify_close(4007, &resumable), ConnectionNext::Reidentify);
-        assert_eq!(classify_close(4014, &resumable), ConnectionNext::Fatal(4014));
+        assert_eq!(
+            classify_close(4014, &resumable),
+            ConnectionNext::Fatal(4014)
+        );
 
         let empty = SessionState::default();
         assert_eq!(classify_close(1006, &empty), ConnectionNext::Reidentify);

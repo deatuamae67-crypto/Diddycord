@@ -7,7 +7,9 @@ use tokio_tungstenite::{
 
 use super::{
     events::{emit, emit_message},
-    protocol::{receive_hello, send_heartbeat, send_identify, send_resume, GatewayEnvelope, ReadyData},
+    protocol::{
+        receive_hello, send_heartbeat, send_identify, send_resume, GatewayEnvelope, ReadyData,
+    },
     recovery::{
         classify_close, gateway_url, heartbeat_jitter, invalid_session_delay, resume_or_reidentify,
         AuthMode, ConnectionExit, ConnectionNext, SessionState,
@@ -58,12 +60,7 @@ impl NetworkBackbone {
 
         match auth {
             AuthMode::Identify => {
-                send_identify(
-                    &mut socket,
-                    self.config.token.as_ref(),
-                    self.config.intents,
-                )
-                .await?;
+                send_identify(&mut socket, self.config.token.as_ref(), self.config.intents).await?;
             }
             AuthMode::Resume => {
                 let session_id = session
@@ -131,9 +128,8 @@ impl NetworkBackbone {
                                         {
                                             session.session_id =
                                                 Some(Box::<str>::from(ready.session_id));
-                                            session.resume_gateway_url = Some(Box::<str>::from(
-                                                ready.resume_gateway_url,
-                                            ));
+                                            session.resume_gateway_url =
+                                                Some(Box::<str>::from(ready.resume_gateway_url));
                                             emit(&self.frontend, FrontendEvent::GatewayReady);
                                         }
                                     }

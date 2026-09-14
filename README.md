@@ -36,6 +36,51 @@ Do not commit `.env` files or tokens. `.env.example` exists only as a variable-n
 
 ## Build
 
-The project pins Rust **1.77.2** because ordinary Rust Windows targets raised their Windows baseline after that toolchain generation. ThhÈÙY\ÈH›Ú™XİZ[X›H›ÜˆHÚ[™İÜÈÈ\™Ù]™\]Z\™[Y[Ú[HÒHÚXÚÜÈHØ[YHTÔ•ˆÛˆ[Ù\›ˆ[›™\œË‚‚˜˜\Ú˜Ø\™ÛÈZ[K\™[X\ÙB˜‚•H™[X\ÙH›Ùš[H\È[X™\˜][HÚ^™KÜ[[YHÜšY[Y‚‚˜Û[–Ü›Ùš[Kœ™[X\ÙWB›Ü[]™[HÂ›ÈHYB˜ÛÙYÙ[‹][š]ÈHBœ[šXÈH˜X›Ü‚œİš\HœŞ[X›ÛÈ‚š[˜Ü™[Y[[H˜[ÙB˜‚ˆÈÈ[™›ÚYˆÈTHŒÂ‚•HÛÜ™H]Ù[ˆÙ\È›İ\[™ÛˆH\ÚİÜÕRHTKˆÒHÜ›ÜÜËXÚXÚÜÈX\˜Ú[[^X[™›ÚY]THŒËˆH]™[X[[™›ÚY\XØ][ÛˆÚİ[^ÜÙHHXœ˜\H›İYÚHÛX[“’KÓ‘ÈœšYÙH[™[š™XİÜ™Y[X[È›İYÚH\XØ][Ûˆ^Y\ˆ˜]\ˆ[ˆ[š\›Û›Y[˜\šXX›\Ë‚‚•HØ[^HÍˆ˜[Z[H^\İÈ[ˆ›İXš][™Ì‹Xš]\Ù\œÜXÙH˜\šX[È\[™[™ÈÛˆš\›]Ø\™KÙ]šXÙHÛÛ™šYİ\˜][Û‹ÛÈš[˜[XÚØYÚ[™ÈÚİ[™\šYHH\™Ù][™Ù]™Y›Ü™H›Ü[™È\›YXXšK]ØXİ\Ü‚‚ˆÈÈœ›Û[™œšYÙB‚Ü™X]HH™XÙZ]™\ˆ™Y›Ü™H[›š[™ÈH˜XÚØ›Û™N‚‚˜\İ›]˜XÚØ›Û™HH™]ÛÜšĞ˜XÚØ›Û™N›™]ÊÛÛ™šYËMŠNÂ›]]]]™[ÈH˜XÚØ›Û™KœİXœØÜšX™J
-NÂ˜‚HŞ[˜Ú›Û›İ\È™[™\‹ÕRHÛÜØ[ˆØ[]™[ËWÜ™XİŠ
-XÛ˜ÙH\ˆœ˜[YKİXÚËˆœ›ØYØ\İ\È›İ[™YˆYÙÚ[™ÈÛÛœİ[Y\œÈÜÙHÛ[šY\È[œİXYÙˆ›ØÚÚ[™ÈH™]ÛÜšÈ^Xİ]Ü‹‚‚ˆÈÈ™\ÜÚ]ÜH^[İ]‚˜^œÜ˜ËÛXZ[‹œœÈ\ÚİÜ\›™\ÜÂœÜ˜ËÛX‹œœÈX›XÈXœ˜\Hİ\™˜XÙBœÜ˜ËÙØ]]Ø^KœœÈ\ØÛÜ™Ø]]Ø^H˜[œÜÜ\œÙ\‹X\™X][™™XÛÛ›™XİÙÚXÂœÜ˜ËÜ[[YKœœÈİË[İ™\šXYÚÚ[È[[YHÛÛ™šYİ\˜][Û‚™ØÜËØ\˜Ú]Xİ\™K›Y˜‚ˆÈÈÙXİ\š]H›İ[™\B‚“™]™\ˆ\™XÛÙHÜˆÛÛ[Z]\ØÛÜ™Ü™Y[X[ËˆH™]ÛÜšÚ[™ÈÛÜ™H™X]ÈHÚÙ[ˆ\ÈÛÛ™šYİ\˜][ÛˆÛ›H[™Ù\È›İÙÈ]‚
+The project pins Rust **1.77.2** because ordinary Rust Windows targets raised their Windows baseline after that toolchain generation. This keeps the project buildable for the Windows 7 target requirement while CI checks the same MSRV on modern runners.
+
+```bash
+cargo build --release
+```
+
+The release profile is deliberately size/runtime oriented:
+
+```toml
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+incremental = false
+```
+
+## Android 6 / API 23
+
+The core itself does not depend on a desktop GUI API. CI cross-checks `aarch64-linux-android` at API 23. The eventual Android application should expose the library through a small JNI/NDK bridge and inject credentials through the application layer rather than environment variables.
+
+The Galaxy S6 family exists in both 64-bit and 32-bit userspace variants depending on firmware/device configuration, so final packaging should verify the target handset before dropping `armeabi-v7a` support.
+
+## Frontend bridge
+
+Create a receiver before running the backbone:
+
+```rust
+let backbone = NetworkBackbone::new(config, 256);
+let mut events = backbone.subscribe();
+```
+
+A synchronous render/UI loop can call `events.try_recv()` once per frame/tick. `broadcast` is bounded: lagging consumers lose old entries instead of blocking the network executor.
+
+## Repository layout
+
+```text
+src/main.rs       desktop harness
+src/lib.rs        public library surface
+src/gateway/      Discord Gateway transport, parser, heartbeat and reconnect logic
+src/runtime.rs    low-overhead Tokio runtime configuration
+docs/architecture.md
+```
+
+## Security boundary
+
+Never hard-code or commit Discord credentials. The networking core treats the token as configuration only and does not log it.
