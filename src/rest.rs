@@ -219,7 +219,11 @@ impl RestDispatcher {
                     return command.failed(None, false, "failed to serialize Discord REST request")
                 }
                 Err(RequestError::BodyTooLarge) => {
-                    return command.failed(None, false, "Discord REST response exceeded safety limit")
+                    return command.failed(
+                        None,
+                        false,
+                        "Discord REST response exceeded safety limit",
+                    )
                 }
             };
 
@@ -405,19 +409,14 @@ struct RestCommand {
 
 impl RestCommand {
     fn operation(&self) -> RestOperation {
-        match self.kind {
+        match &self.kind {
             RestCommandKind::SendMessage { .. } => RestOperation::SendMessage,
             RestCommandKind::EditMessage { .. } => RestOperation::EditMessage,
             RestCommandKind::DeleteMessage { .. } => RestOperation::DeleteMessage,
         }
     }
 
-    fn failed(
-        &self,
-        status: Option<u16>,
-        retryable: bool,
-        message: &str,
-    ) -> RestEvent {
+    fn failed(&self, status: Option<u16>, retryable: bool, message: &str) -> RestEvent {
         RestEvent::Failed {
             request_id: self.request_id,
             operation: self.operation(),
@@ -649,7 +648,10 @@ mod tests {
     #[test]
     fn rate_limit_seconds_are_bounded_and_rounded_up() {
         assert_eq!(seconds_to_duration(0.001), Some(Duration::from_millis(1)));
-        assert_eq!(seconds_to_duration(1.234), Some(Duration::from_millis(1234)));
+        assert_eq!(
+            seconds_to_duration(1.234),
+            Some(Duration::from_millis(1234))
+        );
         assert_eq!(seconds_to_duration(-1.0), None);
         assert_eq!(seconds_to_duration(f64::NAN), None);
         assert_eq!(seconds_to_duration(9999.0), Some(MAX_RATE_LIMIT_DELAY));
