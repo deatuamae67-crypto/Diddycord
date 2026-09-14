@@ -6,6 +6,7 @@ use tokio_tungstenite::{
 };
 
 use super::{
+    bulk::emit_message_delete_bulk,
     events::{
         emit, emit_channel_create, emit_channel_delete, emit_channel_update, emit_guild_create,
         emit_guild_delete, emit_guild_update, emit_message_create, emit_message_delete,
@@ -236,6 +237,13 @@ impl NetworkBackbone {
                                     if self.frontend.receiver_count() != 0 {
                                         if let Some(raw) = envelope.d {
                                             emit_message_delete(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("MESSAGE_DELETE_BULK") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_message_delete_bulk(&self.frontend, raw);
                                         }
                                     }
                                 }
