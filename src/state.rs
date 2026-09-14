@@ -586,9 +586,9 @@ fn snowflake_cmp(left: &str, right: &str) -> Ordering {
 mod tests {
     use super::*;
     use crate::{
-        FrontendChannel, FrontendChannelDelete, FrontendDirectChannel,
-        FrontendDirectChannelDelete, FrontendGuildDelete, FrontendGuildSnapshot, FrontendThread,
-        FrontendThreadListSync, RestOperation,
+        FrontendChannel, FrontendChannelDelete, FrontendDirectChannel, FrontendDirectChannelDelete,
+        FrontendGuildDelete, FrontendGuildSnapshot, FrontendThread, FrontendThreadListSync,
+        RestOperation,
     };
 
     fn message(id: &str, channel_id: &str, content: &str) -> Arc<FrontendEvent> {
@@ -1040,9 +1040,9 @@ mod tests {
     #[test]
     fn direct_channel_delete_retires_timeline_and_blocks_late_history() {
         let mut state = FrontendState::new(8, 8);
-        state.apply(Arc::new(FrontendEvent::DirectChannelCreate(direct_channel(
-            "77",
-        ))));
+        state.apply(Arc::new(FrontendEvent::DirectChannelCreate(
+            direct_channel("77"),
+        )));
         state.apply(message("100", "77", "dm"));
         assert_eq!(state.channel_message_count("77"), 1);
 
@@ -1074,9 +1074,9 @@ mod tests {
         state.apply(message("101", "77", "blocked"));
         assert_eq!(state.channel_message_count("77"), 0);
 
-        state.apply(Arc::new(FrontendEvent::DirectChannelUpdate(direct_channel(
-            "77",
-        ))));
+        state.apply(Arc::new(FrontendEvent::DirectChannelUpdate(
+            direct_channel("77"),
+        )));
         state.apply(message("102", "77", "active again"));
         assert_eq!(state.channel_message_count("77"), 1);
         assert_eq!(
