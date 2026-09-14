@@ -7,11 +7,13 @@ use tokio::{
 
 mod bulk;
 mod connection;
+mod direct;
 mod events;
 mod identity;
 mod protocol;
 mod recovery;
 
+pub use direct::{FrontendDirectChannel, FrontendDirectChannelDelete};
 pub use events::{
     FrontendChannel, FrontendChannelChange, FrontendChannelDelete, FrontendEvent,
     FrontendGuildDelete, FrontendGuildSnapshot, FrontendGuildUpdate, FrontendMessage,
