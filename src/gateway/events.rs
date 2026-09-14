@@ -262,10 +262,7 @@ pub(super) fn emit_message_delete(
     );
 }
 
-pub(super) fn emit_guild_create(
-    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
-    raw: &RawValue,
-) {
+pub(super) fn emit_guild_create(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
     let Ok(guild) = serde_json::from_str::<GuildCreate<'_>>(raw.get()) else {
         return;
     };
@@ -287,10 +284,7 @@ pub(super) fn emit_guild_create(
     );
 }
 
-pub(super) fn emit_guild_update(
-    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
-    raw: &RawValue,
-) {
+pub(super) fn emit_guild_update(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
     let Ok(guild) = serde_json::from_str::<GuildUpdate<'_>>(raw.get()) else {
         return;
     };
@@ -305,10 +299,7 @@ pub(super) fn emit_guild_update(
     );
 }
 
-pub(super) fn emit_guild_delete(
-    frontend: &broadcast::Sender<Arc<FrontendEvent>>,
-    raw: &RawValue,
-) {
+pub(super) fn emit_guild_delete(frontend: &broadcast::Sender<Arc<FrontendEvent>>, raw: &RawValue) {
     let Ok(guild) = serde_json::from_str::<GuildDelete<'_>>(raw.get()) else {
         return;
     };
