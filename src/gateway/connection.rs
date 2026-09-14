@@ -6,7 +6,11 @@ use tokio_tungstenite::{
 };
 
 use super::{
-    events::{emit, emit_message_create, emit_message_delete, emit_message_update},
+    events::{
+        emit, emit_channel_create, emit_channel_delete, emit_channel_update, emit_guild_create,
+        emit_guild_delete, emit_guild_update, emit_message_create, emit_message_delete,
+        emit_message_update,
+    },
     protocol::{
         receive_hello, send_heartbeat, send_identify, send_resume, GatewayEnvelope, ReadyData,
     },
@@ -136,6 +140,48 @@ impl NetworkBackbone {
                                 }
                                 Some("RESUMED") => {
                                     emit(&self.frontend, FrontendEvent::GatewayResumed);
+                                }
+                                Some("GUILD_CREATE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_guild_create(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("GUILD_UPDATE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_guild_update(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("GUILD_DELETE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_guild_delete(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("CHANNEL_CREATE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_channel_create(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("CHANNEL_UPDATE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_channel_update(&self.frontend, raw);
+                                        }
+                                    }
+                                }
+                                Some("CHANNEL_DELETE") => {
+                                    if self.frontend.receiver_count() != 0 {
+                                        if let Some(raw) = envelope.d {
+                                            emit_channel_delete(&self.frontend, raw);
+                                        }
+                                    }
                                 }
                                 Some("MESSAGE_CREATE") => {
                                     if self.frontend.receiver_count() != 0 {

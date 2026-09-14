@@ -44,6 +44,14 @@ The project is intentionally split into small, bounded layers so networking neve
 - REST lag and Gateway lag are accounted separately.
 - Failed REST operations do not mutate presentation state, avoiding rollback bookkeeping.
 
+### Chapter 6 — guild/channel topology
+
+- Selective `GUILD_CREATE`, `GUILD_UPDATE`, `GUILD_DELETE`, `CHANNEL_CREATE`, `CHANNEL_UPDATE`, and `CHANNEL_DELETE` handling.
+- Large guild payloads retain only guild identity/name/availability and channel ID/name/type/position/parent topology; members, roles, presences, emojis and permission metadata are skipped.
+- `TopologyState` uses bounded vector-backed guild/channel storage instead of global hash indexes.
+- Default limits are 256 guilds and 512 channels per guild, with configurable limits and drop accounting.
+- Temporary guild unavailability preserves cached topology; a true guild delete removes it.
+
 ## Authentication
 
 The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
@@ -96,6 +104,12 @@ let mut state = FrontendState::new(64, 128);
 
 // Once per frame/tick:
 let gateway_report = state.drain(&mut gateway_events, 64);
+
+for guild in state.topology().guilds() {
+    for channel in state.topology().channels(guild.id) {
+        let _ = channel.name.as_deref();
+    }
+}
 ```
 
 REST send/edit/delete path:
@@ -122,6 +136,7 @@ src/gateway/      Discord Gateway transport, parser, heartbeat and reconnect log
 src/rest.rs       bounded outbound Discord REST actor
 src/runtime.rs    low-overhead Tokio runtime configuration
 src/state.rs      bounded synchronous presentation cache and REST/Gateway convergence
+src/topology.rs   bounded guild/channel navigation state
 docs/             architecture notes by chapter
 ```
 
