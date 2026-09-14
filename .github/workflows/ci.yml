@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-msrv:
+    name: Linux / Rust 1.77.2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.77.2 --profile minimal --component rustfmt
+          rustup override set 1.77.2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Check
+        run: cargo check --all-targets
+      - name: Test
+        run: cargo test --all-targets
+      - name: Upload resolved lockfile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock-linux
+          path: Cargo.lock
+          if-no-files-found: ignore
+
+  windows-msrv:
+    name: Windows / Rust 1.77.2
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.77.2 --profile minimal
+          rustup override set 1.77.2
+      - name: Check
+        run: cargo check --all-targets
+
+  android-api23:
+    name: Android API 23 / aarch64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain and Android target
+        run: |
+          rustup toolchain install 1.77.2 --profile minimal
+          rustup override set 1.77.2
+          rustup target add aarch64-linux-android --toolchain 1.77.2
+      - name: Install Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
+      - name: Check Android core
+        env:
+          CC_aarch64_linux_android: ${{ github.workspace }}/.ci/android-cc
+          AR_aarch64_linux_android: ${{ github.workspace }}/.ci/android-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ github.workspace }}/.ci/android-cc
+        run: |
+          mkdir -p .ci
+          NDK="$ANDROID_HOME/ndk/27.2.12479018"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          printf '#!/bin/sh\nexec "%s/aarch64-linux-android23-clang" "$@"\n' "$TOOLCHAIN" > .ci/android-cc
+          printf '#!/bin/sh\nexec "%s/llvm-ar" "$@"\n' "$TOOLCHAIN" > .ci/android-ar
+          chmod +x .ci/android-cc .ci/android-ar
+          cargo check --target aarch64-linux-android --lib
