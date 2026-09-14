@@ -3,7 +3,8 @@ pub mod runtime;
 pub mod state;
 
 pub use gateway::{
-    FrontendEvent, FrontendMessage, GatewayConfig, NetworkBackbone, DEFAULT_INTENTS,
+    FrontendEvent, FrontendMessage, FrontendMessageDelete, FrontendMessageUpdate, GatewayConfig,
+    NetworkBackbone, DEFAULT_INTENTS,
 };
 pub use runtime::{build_runtime, recommended_worker_threads};
 pub use state::{DrainReport, FrontendState};

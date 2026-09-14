@@ -72,10 +72,7 @@ impl FrontendState {
         self.channels
             .get(channel_id)
             .and_then(|timeline| timeline.messages.back())
-            .and_then(|event| match event.as_ref() {
-                FrontendEvent::Message(message) => Some(message),
-                FrontendEvent::GatewayReady | FrontendEvent::GatewayResumed => None,
-            })
+            .and_then(frontend_message)
     }
 
     pub fn messages<'a>(
@@ -86,10 +83,7 @@ impl FrontendState {
             .get(channel_id)
             .into_iter()
             .flat_map(|timeline| timeline.messages.iter())
-            .filter_map(|event| match event.as_ref() {
-                FrontendEvent::Message(message) => Some(message),
-                FrontendEvent::GatewayReady | FrontendEvent::GatewayResumed => None,
-            })
+            .filter_map(frontend_message)
     }
 
     pub fn apply(&mut self, event: Arc<FrontendEvent>) {
@@ -120,6 +114,54 @@ impl FrontendState {
                     timeline.messages.pop_front();
                 }
                 timeline.messages.push_back(Arc::clone(&event));
+            }
+            FrontendEvent::MessageUpdate(update) => {
+                self.clock = self.clock.saturating_add(1);
+                let touched = self.clock;
+                let Some(timeline) = self.channels.get_mut(update.channel_id.as_ref()) else {
+                    return;
+                };
+                timeline.touched = touched;
+
+                let Some(slot) = timeline.messages.iter_mut().rev().find(|event| {
+                    frontend_message(event)
+                        .map(|message| message.id.as_ref() == update.id.as_ref())
+                        .unwrap_or(false)
+                }) else {
+                    return;
+                };
+                let Some(existing) = frontend_message(slot) else {
+                    return;
+                };
+
+                let replacement = FrontendMessage {
+                    id: existing.id.clone(),
+                    channel_id: existing.channel_id.clone(),
+                    author_username: update
+                        .author_username
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| existing.author_username.clone()),
+                    content: update
+                        .content
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| existing.content.clone()),
+                };
+                *slot = Arc::new(FrontendEvent::Message(replacement));
+            }
+            FrontendEvent::MessageDelete(delete) => {
+                self.clock = self.clock.saturating_add(1);
+                let touched = self.clock;
+                let Some(timeline) = self.channels.get_mut(delete.channel_id.as_ref()) else {
+                    return;
+                };
+                timeline.touched = touched;
+                timeline.messages.retain(|event| {
+                    frontend_message(event)
+                        .map(|message| message.id.as_ref() != delete.id.as_ref())
+                        .unwrap_or(true)
+                });
             }
         }
     }
@@ -175,12 +217,24 @@ impl FrontendState {
     }
 }
 
+fn frontend_message(event: &Arc<FrontendEvent>) -> Option<&FrontendMessage> {
+    match event.as_ref() {
+        FrontendEvent::Message(message) => Some(message),
+        FrontendEvent::GatewayReady
+        | FrontendEvent::GatewayResumed
+        | FrontendEvent::MessageUpdate(_)
+        | FrontendEvent::MessageDelete(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FrontendMessageDelete, FrontendMessageUpdate};
 
-    fn message(channel_id: &str, content: &str) -> Arc<FrontendEvent> {
+    fn message(id: &str, channel_id: &str, content: &str) -> Arc<FrontendEvent> {
         Arc::new(FrontendEvent::Message(FrontendMessage {
+            id: Box::<str>::from(id),
             channel_id: Box::<str>::from(channel_id),
             author_username: Box::<str>::from("tester"),
             content: Box::<str>::from(content),
@@ -190,9 +244,9 @@ mod tests {
     #[test]
     fn message_history_is_bounded_per_channel() {
         let mut state = FrontendState::new(8, 2);
-        state.apply(message("channel", "one"));
-        state.apply(message("channel", "two"));
-        state.apply(message("channel", "three"));
+        state.apply(message("1", "channel", "one"));
+        state.apply(message("2", "channel", "two"));
+        state.apply(message("3", "channel", "three"));
 
         let content: Vec<&str> = state
             .messages("channel")
@@ -204,10 +258,10 @@ mod tests {
     #[test]
     fn least_recently_used_channel_is_evicted_at_capacity() {
         let mut state = FrontendState::new(2, 4);
-        state.apply(message("a", "one"));
-        state.apply(message("b", "two"));
-        state.apply(message("a", "three"));
-        state.apply(message("c", "four"));
+        state.apply(message("1", "a", "one"));
+        state.apply(message("2", "b", "two"));
+        state.apply(message("3", "a", "three"));
+        state.apply(message("4", "c", "four"));
 
         assert_eq!(state.cached_channel_count(), 2);
         assert_eq!(state.channel_message_count("a"), 2);
@@ -218,8 +272,8 @@ mod tests {
     #[test]
     fn drain_never_waits_for_more_events() {
         let (sender, mut receiver) = broadcast::channel(8);
-        sender.send(message("a", "one")).unwrap();
-        sender.send(message("a", "two")).unwrap();
+        sender.send(message("1", "a", "one")).unwrap();
+        sender.send(message("2", "a", "two")).unwrap();
 
         let mut state = FrontendState::new(8, 8);
         let report = state.drain(&mut receiver, 32);
@@ -233,9 +287,9 @@ mod tests {
     #[test]
     fn lagged_receiver_is_accounted_without_blocking() {
         let (sender, mut receiver) = broadcast::channel(2);
-        sender.send(message("a", "one")).unwrap();
-        sender.send(message("a", "two")).unwrap();
-        sender.send(message("a", "three")).unwrap();
+        sender.send(message("1", "a", "one")).unwrap();
+        sender.send(message("2", "a", "two")).unwrap();
+        sender.send(message("3", "a", "three")).unwrap();
 
         let mut state = FrontendState::new(8, 8);
         let report = state.drain(&mut receiver, 8);
@@ -251,5 +305,40 @@ mod tests {
         assert!(!state.gateway_ready());
         state.apply(Arc::new(FrontendEvent::GatewayReady));
         assert!(state.gateway_ready());
+    }
+
+    #[test]
+    fn message_update_replaces_only_present_fields() {
+        let mut state = FrontendState::new(4, 8);
+        state.apply(message("55", "channel", "before"));
+        state.apply(Arc::new(FrontendEvent::MessageUpdate(
+            FrontendMessageUpdate {
+                id: Box::<str>::from("55"),
+                channel_id: Box::<str>::from("channel"),
+                author_username: None,
+                content: Some(Box::<str>::from("after")),
+            },
+        )));
+
+        let updated = state.latest_message("channel").unwrap();
+        assert_eq!(updated.id.as_ref(), "55");
+        assert_eq!(updated.author_username.as_ref(), "tester");
+        assert_eq!(updated.content.as_ref(), "after");
+    }
+
+    #[test]
+    fn message_delete_removes_cached_message() {
+        let mut state = FrontendState::new(4, 8);
+        state.apply(message("55", "channel", "keep?"));
+        state.apply(message("56", "channel", "keep"));
+        state.apply(Arc::new(FrontendEvent::MessageDelete(
+            FrontendMessageDelete {
+                id: Box::<str>::from("55"),
+                channel_id: Box::<str>::from("channel"),
+            },
+        )));
+
+        assert_eq!(state.channel_message_count("channel"), 1);
+        assert_eq!(state.latest_message("channel").unwrap().id.as_ref(), "56");
     }
 }
