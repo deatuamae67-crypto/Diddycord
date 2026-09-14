@@ -6,7 +6,7 @@ pub mod state;
 pub mod topology;
 
 pub use gateway::{
-    FrontendChannel, FrontendChannelChange, FrontendChannelDelete, FrontendEvent,
+    CurrentUser, FrontendChannel, FrontendChannelChange, FrontendChannelDelete, FrontendEvent,
     FrontendGuildDelete, FrontendGuildSnapshot, FrontendGuildUpdate, FrontendMessage,
     FrontendMessageDelete, FrontendMessageUpdate, FrontendThread, FrontendThreadDelete,
     FrontendThreadListSync, GatewayConfig, NetworkBackbone, NetworkControl, NetworkStatus,

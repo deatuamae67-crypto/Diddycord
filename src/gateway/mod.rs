@@ -8,6 +8,7 @@ use tokio::{
 mod bulk;
 mod connection;
 mod events;
+mod identity;
 mod protocol;
 mod recovery;
 
@@ -17,6 +18,7 @@ pub use events::{
     FrontendMessageDelete, FrontendMessageUpdate, FrontendThread, FrontendThreadDelete,
     FrontendThreadListSync,
 };
+pub use identity::CurrentUser;
 use recovery::{reconnect_delay, AuthMode, ConnectionNext, SessionState};
 
 pub(super) const GATEWAY_VERSION: u8 = 9;
@@ -48,6 +50,7 @@ pub enum NetworkStatus {
 pub struct NetworkControl {
     shutdown: watch::Sender<bool>,
     status: watch::Receiver<NetworkStatus>,
+    self_user: watch::Receiver<Option<Arc<CurrentUser>>>,
 }
 
 impl NetworkControl {
@@ -61,6 +64,14 @@ impl NetworkControl {
 
     pub fn subscribe_status(&self) -> watch::Receiver<NetworkStatus> {
         self.status.clone()
+    }
+
+    pub fn self_user(&self) -> Option<Arc<CurrentUser>> {
+        self.self_user.borrow().as_ref().map(Arc::clone)
+    }
+
+    pub fn subscribe_self_user(&self) -> watch::Receiver<Option<Arc<CurrentUser>>> {
+        self.self_user.clone()
     }
 }
 
@@ -87,6 +98,7 @@ pub struct NetworkBackbone {
     pub(super) frontend: broadcast::Sender<Arc<FrontendEvent>>,
     shutdown: watch::Sender<bool>,
     status: watch::Sender<NetworkStatus>,
+    self_user: watch::Sender<Option<Arc<CurrentUser>>>,
 }
 
 impl NetworkBackbone {
@@ -94,11 +106,13 @@ impl NetworkBackbone {
         let (frontend, _) = broadcast::channel(frontend_capacity.max(8));
         let (shutdown, _) = watch::channel(false);
         let (status, _) = watch::channel(NetworkStatus::Idle);
+        let (self_user, _) = watch::channel::<Option<Arc<CurrentUser>>>(None);
         Self {
             config,
             frontend,
             shutdown,
             status,
+            self_user,
         }
     }
 
@@ -110,11 +124,16 @@ impl NetworkBackbone {
         NetworkControl {
             shutdown: self.shutdown.clone(),
             status: self.status.subscribe(),
+            self_user: self.self_user.subscribe(),
         }
     }
 
     pub fn subscribe_status(&self) -> watch::Receiver<NetworkStatus> {
         self.status.subscribe()
+    }
+
+    pub fn subscribe_self_user(&self) -> watch::Receiver<Option<Arc<CurrentUser>>> {
+        self.self_user.subscribe()
     }
 
     pub async fn run(self) -> Result<(), BoxError> {
@@ -197,6 +216,10 @@ impl NetworkBackbone {
     pub(super) fn set_status(&self, status: NetworkStatus) {
         self.status.send_replace(status);
     }
+
+    pub(super) fn set_self_user(&self, user: CurrentUser) {
+        self.self_user.send_replace(Some(Arc::new(user)));
+    }
 }
 
 pub(super) fn io_error(message: impl Into<String>) -> io::Error {
@@ -215,6 +238,27 @@ mod tests {
 
         assert_eq!(control.status(), NetworkStatus::Idle);
         assert_eq!(cloned.status(), NetworkStatus::Idle);
+        assert!(control.self_user().is_none());
+        assert!(cloned.self_user().is_none());
+    }
+
+    #[test]
+    fn current_user_updates_are_visible_through_existing_controls() {
+        let backbone = NetworkBackbone::new(GatewayConfig::new("test-token", DEFAULT_INTENTS), 8);
+        let control = backbone.control();
+
+        backbone.set_self_user(CurrentUser {
+            id: Box::<str>::from("123"),
+            username: Box::<str>::from("diddy"),
+            global_name: Some(Box::<str>::from("Diddy Bot")),
+            discriminator: Some(Box::<str>::from("0")),
+            avatar_hash: None,
+            bot: true,
+        });
+
+        let user = control.self_user().unwrap();
+        assert_eq!(user.id.as_ref(), "123");
+        assert_eq!(user.display_name(), "Diddy Bot");
     }
 
     #[test]

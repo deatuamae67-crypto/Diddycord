@@ -13,6 +13,7 @@ use super::{
         emit_message_update, emit_thread_create, emit_thread_delete, emit_thread_list_sync,
         emit_thread_update,
     },
+    identity::CurrentUser,
     protocol::{
         receive_hello, send_heartbeat, send_identify, send_resume, GatewayEnvelope, ReadyData,
     },
@@ -140,6 +141,9 @@ impl NetworkBackbone {
                                                 Some(Box::<str>::from(ready.session_id));
                                             session.resume_gateway_url =
                                                 Some(Box::<str>::from(ready.resume_gateway_url));
+                                            if let Some(user) = CurrentUser::from_ready(raw) {
+                                                self.set_self_user(user);
+                                            }
                                             self.set_status(NetworkStatus::Ready);
                                             emit(&self.frontend, FrontendEvent::GatewayReady);
                                         }
@@ -148,6 +152,13 @@ impl NetworkBackbone {
                                 Some("RESUMED") => {
                                     self.set_status(NetworkStatus::Ready);
                                     emit(&self.frontend, FrontendEvent::GatewayResumed);
+                                }
+                                Some("USER_UPDATE") => {
+                                    if let Some(raw) = envelope.d {
+                                        if let Some(user) = CurrentUser::from_user_update(raw) {
+                                            self.set_self_user(user);
+                                        }
+                                    }
                                 }
                                 Some("GUILD_CREATE") => {
                                     if self.frontend.receiver_count() != 0 {

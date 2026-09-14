@@ -104,6 +104,15 @@ The project is intentionally split into small, bounded layers so networking neve
 - A bounded FIFO of retired channel/thread snowflakes prevents late REST history responses or stale message events from resurrecting deleted timelines.
 - Active thread/create/sync events clear matching tombstones, allowing Discord threads to be unarchived under the same snowflake without losing subsequent messages.
 
+### Chapter 13 — current bot identity
+
+- `READY` now selectively captures the authenticated bot's ID, username, global display name, discriminator, avatar hash, and bot flag while ignoring unrelated account/application metadata.
+- `USER_UPDATE` refreshes that identity without touching the high-volume frontend event stream.
+- Identity uses `watch<Option<Arc<CurrentUser>>>`: there is no growing queue, and multiple frontend consumers share the same allocated strings.
+- `NetworkControl::self_user()` provides an immediate snapshot while `subscribe_self_user()` supports reactive desktop/mobile UI updates.
+- `CurrentUser::display_name()` prefers Discord's global name and falls back to the username.
+- The value survives reconnect/resume transitions until Discord supplies a newer identity, and the feature remains strictly within bot/application authentication.
+
 ## Authentication
 
 The current core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
@@ -153,6 +162,7 @@ Gateway receive/lifecycle path:
 let backbone = NetworkBackbone::new(config, 256);
 let control = backbone.control();
 let mut network_status = control.subscribe_status();
+let self_user = control.subscribe_self_user();
 let mut gateway_events = backbone.subscribe();
 let mut state = FrontendState::new(64, 128);
 
@@ -163,6 +173,10 @@ runtime.spawn(async move {
 // Once per frame/tick:
 let gateway_report = state.drain(&mut gateway_events, 64);
 let current_status = *network_status.borrow();
+if let Some(user) = self_user.borrow().as_ref() {
+    let display_name = user.display_name();
+    let avatar_hash = user.avatar_hash.as_deref();
+}
 
 for guild in state.topology().guilds() {
     for channel in state.topology().channels(guild.id) {
@@ -208,7 +222,7 @@ Both transports are bounded: a slow frontend cannot block Gateway heartbeats or 
 ```text
 src/main.rs       desktop Gateway harness
 src/lib.rs        public library surface
-src/gateway/      Discord Gateway transport, selective parsers, heartbeat, reconnect and lifecycle control
+src/gateway/      Discord Gateway transport, selective parsers, identity, heartbeat, reconnect and lifecycle control
 src/history.rs    selected-channel history paging state machine
 src/rest.rs       bounded Discord REST actor, outbound actions and message-history reads
 src/runtime.rs    low-overhead Tokio runtime configuration
