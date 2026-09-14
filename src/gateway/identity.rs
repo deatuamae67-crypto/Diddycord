@@ -13,7 +13,9 @@ pub struct CurrentUser {
 
 impl CurrentUser {
     pub fn display_name(&self) -> &str {
-        self.global_name.as_deref().unwrap_or(self.username.as_ref())
+        self.global_name
+            .as_deref()
+            .unwrap_or(self.username.as_ref())
     }
 
     pub(super) fn from_ready(raw: &RawValue) -> Option<Self> {
@@ -128,10 +130,9 @@ mod tests {
 
     #[test]
     fn malformed_identity_is_rejected_without_allocation_state() {
-        let raw: &RawValue = serde_json::from_str(
-            r#"{"id":"not-a-snowflake","username":"diddy","bot":true}"#,
-        )
-        .unwrap();
+        let raw: &RawValue =
+            serde_json::from_str(r#"{"id":"not-a-snowflake","username":"diddy","bot":true}"#)
+                .unwrap();
 
         assert!(CurrentUser::from_user_update(raw).is_none());
     }
