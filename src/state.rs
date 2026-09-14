@@ -5,7 +5,9 @@ use std::{
 
 use tokio::sync::broadcast::{self, error::TryRecvError};
 
-use crate::{FrontendEvent, FrontendMessage};
+use crate::{
+    FrontendEvent, FrontendMessage, FrontendMessageDelete, FrontendMessageUpdate, RestEvent,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DrainReport {
@@ -35,6 +37,7 @@ pub struct FrontendState {
     clock: u64,
     gateway_ready: bool,
     dropped_gateway_events: u64,
+    dropped_rest_events: u64,
 }
 
 impl FrontendState {
@@ -46,6 +49,7 @@ impl FrontendState {
             clock: 0,
             gateway_ready: false,
             dropped_gateway_events: 0,
+            dropped_rest_events: 0,
         }
     }
 
@@ -59,6 +63,10 @@ impl FrontendState {
 
     pub fn dropped_gateway_events(&self) -> u64 {
         self.dropped_gateway_events
+    }
+
+    pub fn dropped_rest_events(&self) -> u64 {
+        self.dropped_rest_events
     }
 
     pub fn channel_message_count(&self, channel_id: &str) -> usize {
@@ -109,6 +117,15 @@ impl FrontendState {
                     .get_mut(channel_id)
                     .expect("channel timeline was inserted before lookup");
                 timeline.touched = touched;
+
+                if let Some(slot) = timeline.messages.iter_mut().rev().find(|cached| {
+                    frontend_message(cached)
+                        .map(|existing| existing.id.as_ref() == message.id.as_ref())
+                        .unwrap_or(false)
+                }) {
+                    *slot = Arc::clone(&event);
+                    return;
+                }
 
                 if timeline.messages.len() >= self.max_messages_per_channel {
                     timeline.messages.pop_front();
@@ -166,6 +183,55 @@ impl FrontendState {
         }
     }
 
+    pub fn apply_rest(&mut self, event: &RestEvent) {
+        match event {
+            RestEvent::MessageSent { message, .. } => {
+                let Some(author_username) = message.author_username.as_ref() else {
+                    return;
+                };
+
+                self.apply(Arc::new(FrontendEvent::Message(FrontendMessage {
+                    id: message.id.clone(),
+                    channel_id: message.channel_id.clone(),
+                    author_username: author_username.clone(),
+                    content: message.content.clone(),
+                })));
+            }
+            RestEvent::MessageEdited { message, .. } => {
+                if let Some(author_username) = message.author_username.as_ref() {
+                    self.apply(Arc::new(FrontendEvent::Message(FrontendMessage {
+                        id: message.id.clone(),
+                        channel_id: message.channel_id.clone(),
+                        author_username: author_username.clone(),
+                        content: message.content.clone(),
+                    })));
+                } else {
+                    self.apply(Arc::new(FrontendEvent::MessageUpdate(
+                        FrontendMessageUpdate {
+                            id: message.id.clone(),
+                            channel_id: message.channel_id.clone(),
+                            author_username: None,
+                            content: Some(message.content.clone()),
+                        },
+                    )));
+                }
+            }
+            RestEvent::MessageDeleted {
+                channel_id,
+                message_id,
+                ..
+            } => {
+                self.apply(Arc::new(FrontendEvent::MessageDelete(
+                    FrontendMessageDelete {
+                        id: message_id.clone(),
+                        channel_id: channel_id.clone(),
+                    },
+                )));
+            }
+            RestEvent::Failed { .. } => {}
+        }
+    }
+
     pub fn drain(
         &mut self,
         receiver: &mut broadcast::Receiver<Arc<FrontendEvent>>,
@@ -183,6 +249,34 @@ impl FrontendState {
                     report.lagged = report.lagged.saturating_add(skipped);
                     self.dropped_gateway_events =
                         self.dropped_gateway_events.saturating_add(skipped);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Closed) => {
+                    report.closed = true;
+                    break;
+                }
+            }
+        }
+
+        report
+    }
+
+    pub fn drain_rest(
+        &mut self,
+        receiver: &mut broadcast::Receiver<Arc<RestEvent>>,
+        budget: usize,
+    ) -> DrainReport {
+        let mut report = DrainReport::default();
+
+        while report.applied < budget {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    self.apply_rest(event.as_ref());
+                    report.applied += 1;
+                }
+                Err(TryRecvError::Lagged(skipped)) => {
+                    report.lagged = report.lagged.saturating_add(skipped);
+                    self.dropped_rest_events = self.dropped_rest_events.saturating_add(skipped);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Closed) => {
@@ -230,7 +324,7 @@ fn frontend_message(event: &Arc<FrontendEvent>) -> Option<&FrontendMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FrontendMessageDelete, FrontendMessageUpdate};
+    use crate::{RestMessage, RestOperation};
 
     fn message(id: &str, channel_id: &str, content: &str) -> Arc<FrontendEvent> {
         Arc::new(FrontendEvent::Message(FrontendMessage {
@@ -239,6 +333,15 @@ mod tests {
             author_username: Box::<str>::from("tester"),
             content: Box::<str>::from(content),
         }))
+    }
+
+    fn rest_message(id: &str, channel_id: &str, content: &str) -> RestMessage {
+        RestMessage {
+            id: Box::<str>::from(id),
+            channel_id: Box::<str>::from(channel_id),
+            author_username: Some(Box::<str>::from("tester")),
+            content: Box::<str>::from(content),
+        }
     }
 
     #[test]
@@ -253,6 +356,19 @@ mod tests {
             .map(|message| message.content.as_ref())
             .collect();
         assert_eq!(content, vec!["two", "three"]);
+    }
+
+    #[test]
+    fn duplicate_create_upserts_instead_of_appending() {
+        let mut state = FrontendState::new(8, 8);
+        state.apply(message("1", "channel", "rest copy"));
+        state.apply(message("1", "channel", "gateway copy"));
+
+        assert_eq!(state.channel_message_count("channel"), 1);
+        assert_eq!(
+            state.latest_message("channel").unwrap().content.as_ref(),
+            "gateway copy"
+        );
     }
 
     #[test]
@@ -340,5 +456,81 @@ mod tests {
 
         assert_eq!(state.channel_message_count("channel"), 1);
         assert_eq!(state.latest_message("channel").unwrap().id.as_ref(), "56");
+    }
+
+    #[test]
+    fn rest_send_and_gateway_echo_converge_without_duplicates() {
+        let mut state = FrontendState::new(4, 8);
+        state.apply_rest(&RestEvent::MessageSent {
+            request_id: 7,
+            message: rest_message("55", "channel", "from REST"),
+        });
+        state.apply(message("55", "channel", "from Gateway"));
+
+        assert_eq!(state.channel_message_count("channel"), 1);
+        assert_eq!(
+            state.latest_message("channel").unwrap().content.as_ref(),
+            "from Gateway"
+        );
+    }
+
+    #[test]
+    fn rest_edit_and_delete_apply_to_cache() {
+        let mut state = FrontendState::new(4, 8);
+        state.apply(message("55", "channel", "before"));
+        state.apply_rest(&RestEvent::MessageEdited {
+            request_id: 8,
+            message: rest_message("55", "channel", "after"),
+        });
+        assert_eq!(
+            state.latest_message("channel").unwrap().content.as_ref(),
+            "after"
+        );
+
+        state.apply_rest(&RestEvent::MessageDeleted {
+            request_id: 9,
+            channel_id: Box::<str>::from("channel"),
+            message_id: Box::<str>::from("55"),
+        });
+        assert_eq!(state.channel_message_count("channel"), 0);
+    }
+
+    #[test]
+    fn failed_rest_operation_does_not_mutate_cache() {
+        let mut state = FrontendState::new(4, 8);
+        state.apply(message("55", "channel", "keep"));
+        state.apply_rest(&RestEvent::Failed {
+            request_id: 10,
+            operation: RestOperation::EditMessage,
+            status: Some(500),
+            retryable: true,
+            message: Box::<str>::from("server error"),
+        });
+
+        assert_eq!(state.channel_message_count("channel"), 1);
+        assert_eq!(
+            state.latest_message("channel").unwrap().content.as_ref(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn rest_drain_tracks_lag_separately() {
+        let (sender, mut receiver) = broadcast::channel(2);
+        for request_id in 1..=3 {
+            sender
+                .send(Arc::new(RestEvent::MessageSent {
+                    request_id,
+                    message: rest_message(&request_id.to_string(), "channel", "x"),
+                }))
+                .unwrap();
+        }
+
+        let mut state = FrontendState::new(4, 8);
+        let report = state.drain_rest(&mut receiver, 8);
+
+        assert!(report.lagged >= 1);
+        assert_eq!(state.dropped_rest_events(), report.lagged);
+        assert_eq!(state.dropped_gateway_events(), 0);
     }
 }
