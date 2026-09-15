@@ -1,0 +1,178 @@
+name: Release binaries
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  metadata:
+    name: Resolve release tag
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - id: meta
+        name: Read package version and verify tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          test -n "$VERSION"
+          TAG="v$VERSION"
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  linux-x86_64:
+    name: Linux x86_64 release
+    needs: metadata
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.77.2 --profile minimal
+          rustup override set 1.77.2
+      - name: Build optimized executable
+        run: cargo build --release --bin diddycord
+      - name: Package executable and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="diddycord-${TAG}-linux-x86_64.tar.gz"
+          tar -czf "$ARCHIVE" -C target/release diddycord
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diddycord-linux-x86_64
+          path: |
+            diddycord-${{ env.TAG }}-linux-x86_64.tar.gz
+            diddycord-${{ env.TAG }}-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+
+  windows-x86_64:
+    name: Windows x86_64 release
+    needs: metadata
+    runs-on: windows-latest
+    env:
+      TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.77.2 --profile minimal
+          rustup override set 1.77.2
+      - name: Build optimized executable
+        run: cargo build --release --bin diddycord
+      - name: Package executable and checksum
+        shell: pwsh
+        run: |
+          $archive = "diddycord-$env:TAG-windows-x86_64.zip"
+          Compress-Archive -Path "target/release/diddycord.exe" -DestinationPath $archive -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  $archive" | Out-File -FilePath "$archive.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diddycord-windows-x86_64
+          path: |
+            diddycord-${{ env.TAG }}-windows-x86_64.zip
+            diddycord-${{ env.TAG }}-windows-x86_64.zip.sha256
+          if-no-files-found: error
+
+  android-aarch64:
+    name: Android API 23 aarch64 native release
+    needs: metadata
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
+      - name: Install pinned Rust toolchain and Android target
+        run: |
+          rustup toolchain install 1.77.2 --profile minimal
+          rustup override set 1.77.2
+          rustup target add aarch64-linux-android --toolchain 1.77.2
+      - name: Install Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
+      - name: Configure Android linker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci
+          NDK="$ANDROID_HOME/ndk/27.2.12479018"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          printf '#!/bin/sh\nexec "%s/aarch64-linux-android23-clang" "$@"\n' "$TOOLCHAIN" > .ci/android-cc
+          printf '#!/bin/sh\nexec "%s/llvm-ar" "$@"\n' "$TOOLCHAIN" > .ci/android-ar
+          chmod +x .ci/android-cc .ci/android-ar
+      - name: Build optimized Android native executable
+        env:
+          CC_aarch64_linux_android: ${{ github.workspace }}/.ci/android-cc
+          AR_aarch64_linux_android: ${{ github.workspace }}/.ci/android-ar
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ github.workspace }}/.ci/android-cc
+        run: cargo build --release --target aarch64-linux-android --bin diddycord
+      - name: Package executable and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="diddycord-${TAG}-android-api23-aarch64.tar.gz"
+          tar -czf "$ARCHIVE" -C target/aarch64-linux-android/release diddycord
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diddycord-android-api23-aarch64
+          path: |
+            diddycord-${{ env.TAG }}-android-api23-aarch64.tar.gz
+            diddycord-${{ env.TAG }}-android-api23-aarch64.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [metadata, linux-x86_64, windows-x86_64, android-aarch64]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.metadata.outputs.tag }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: diddycord-*
+          path: dist
+          merge-multiple: true
+      - name: Create or update release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "Diddycord $TAG" \
+              --notes "Diddycord $TAG compiled release.\n\nDownloads:\n- Windows x86_64: ZIP containing diddycord.exe\n- Linux x86_64: tar.gz containing diddycord\n- Android 6+/API 23 aarch64: native command-line executable (not an APK)\n\nThe executable is the current headless Discord bot client core. Set DISCORD_BOT_TOKEN before running; DISCORD_INTENTS is optional. SHA-256 checksum files are included for every archive."
+          fi
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
