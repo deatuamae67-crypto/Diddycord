@@ -1,20 +1,24 @@
-use std::{env, error::Error, io};
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use diddycord::{
-    build_runtime, install_crypto_provider, GatewayConfig, NetworkBackbone, DEFAULT_INTENTS,
-};
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+mod desktop_app;
 
-type BoxError = Box<dyn Error + Send + Sync + 'static>;
-
-fn io_error(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, message.into())
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn main() -> Result<(), eframe::Error> {
+    desktop_app::run()
 }
 
-fn main() -> Result<(), BoxError> {
-    install_crypto_provider();
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    use std::{env, io};
 
-    let token =
-        env::var("DISCORD_BOT_TOKEN").map_err(|_| io_error("DISCORD_BOT_TOKEN is not set"))?;
+    use diddycord::{
+        build_runtime, install_crypto_provider, GatewayConfig, NetworkBackbone, DEFAULT_INTENTS,
+    };
+
+    install_crypto_provider();
+    let token = env::var("DISCORD_BOT_TOKEN")
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "DISCORD_BOT_TOKEN is not set"))?;
     let intents = env::var("DISCORD_INTENTS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())

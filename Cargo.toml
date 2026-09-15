@@ -20,6 +20,40 @@ tokio-tungstenite = { version = "=0.28.0", default-features = false, features = 
 url = "=2.4.1"
 zeroize = "=1.8.1"
 
+# eframe 0.27.2 is the GUI baseline: its declared MSRV is Rust 1.72 and it uses winit 0.29.
+# Keep desktop GUI dependencies out of the Android core build until the NativeActivity package lands.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "=0.27.2", default-features = false, features = ["default_fonts", "glow", "x11"] }
+# eframe 0.27 enables egui-winit clipboard support, whose broad 0.7 smithay-clipboard range now resolves
+# to releases using edition-2024 Wayland crates. 0.7.0 declares Rust 1.65 and stays on SCTK 0.18.
+smithay-clipboard = "=0.7.0"
+# These ranges are broad in the 0.27-era GUI graph. Pin them before later releases switched their
+# hash/TOML/XML/build/text tooling to versions newer than the Rust 1.77.2 baseline.
+indexmap = "=2.2.6"
+num_enum = "=0.7.2"
+proc-macro-crate = "=3.1.0"
+wayland-scanner = "=0.31.7"
+quick-xml = "=0.37.5"
+jobserver = "=0.1.32"
+unicode-segmentation = "=1.12.0"
+# Pin broad eframe transitive ranges so Cargo 1.77.2 does not drift into newer-MSRV releases.
+arboard = "=3.3.2"
+home = "=0.5.9"
+webbrowser = "=0.8.13"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+eframe = { version = "=0.27.2", default-features = false, features = ["default_fonts", "glow"] }
+indexmap = "=2.2.6"
+num_enum = "=0.7.2"
+proc-macro-crate = "=3.1.0"
+wayland-scanner = "=0.31.7"
+quick-xml = "=0.37.5"
+jobserver = "=0.1.32"
+unicode-segmentation = "=1.12.0"
+arboard = "=3.3.2"
+home = "=0.5.9"
+webbrowser = "=0.8.13"
+
 [profile.release]
 opt-level = 3
 lto = true
