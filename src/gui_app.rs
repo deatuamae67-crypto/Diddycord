@@ -39,12 +39,16 @@ pub(crate) fn run_desktop() -> Result<(), eframe::Error> {
 pub(crate) fn run_android(
     app: winit::platform::android::activity::AndroidApp,
 ) -> Result<(), eframe::Error> {
+    use winit::platform::android::EventLoopBuilderExtAndroid as _;
+
     install_crypto_provider();
 
-    let options = eframe::NativeOptions {
-        android_app: Some(app),
-        ..Default::default()
-    };
+    // eframe 0.27 predates NativeOptions::android_app. Its supported escape hatch is the
+    // event-loop builder hook, which lets us attach the AndroidApp required by winit 0.29.
+    let mut options = eframe::NativeOptions::default();
+    options.event_loop_builder = Some(Box::new(move |builder| {
+        builder.with_android_app(app);
+    }));
 
     eframe::run_native(
         "Diddycord",
