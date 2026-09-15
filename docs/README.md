@@ -1,3 +1,8 @@
 # Architecture notes
 
-The `docs/` directory contains chapter-specific implementation notes for Diddycord's bounded cross-platform core. Chapter 12 cache invalidation is documented in `cache-invalidation.md`, with a compact test matrix in `cache-invalidation-testing.md` and implementation constraints in `cache-invalidation-notes.md`.
+The `docs/` directory contains implementation notes for Diddycord's bounded cross-platform core and graphical frontends.
+
+- `desktop-gui.md` documents the native Windows/Linux/macOS graphical client introduced in Chapter 16.
+- `android-gui.md` documents the Android 6+/API 23 NativeActivity graphical APK, its mobile navigation model, packaging and signing behavior.
+- `cache-invalidation.md`, `cache-invalidation-testing.md`, and `cache-invalidation-notes.md` cover Chapter 12 topology-driven message-cache invalidation.
+- The remaining chapter files document the corresponding bounded Gateway, REST, topology, identity, DM and history components.

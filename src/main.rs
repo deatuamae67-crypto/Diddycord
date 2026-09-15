@@ -1,11 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-mod desktop_app;
-
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn main() -> Result<(), eframe::Error> {
-    desktop_app::run()
+    diddycord::run_desktop_gui()
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]

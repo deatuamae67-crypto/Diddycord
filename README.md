@@ -1,151 +1,98 @@
 # Diddycord
 
-Diddycord is an experimental ultra-low-overhead Rust Discord client core. The design target is one codebase that remains responsive on modern desktop hardware while still being practical on legacy systems such as a Core 2 Duo / Windows 7 machine and Android 6-era ARM hardware.
+Diddycord is an experimental, low-overhead **graphical Discord bot client** written in Rust. The project keeps the Discord networking core independent from presentation so the same bounded Gateway/REST architecture can drive native desktop and Android frontends without moving network work onto the render thread.
 
-The project is intentionally split into small, bounded layers so networking never waits for a synchronous frontend and memory usage remains predictable.
+The compatibility target is deliberately broad: modern desktops, legacy Windows 7/Core 2 Duo-class systems, and Android 6/API 23-era ARM64 hardware.
 
-## Current implementation
+> Diddycord accepts Discord **bot/application tokens only**. User-token/self-bot authentication is intentionally unsupported.
 
-### Chapter 1 — asynchronous Gateway backbone
+## Current applications
 
-- Tokio multi-thread runtime with a 1–4 worker cap, bounded blocking pool, reduced worker stack size, explicit scheduler polling intervals, and cooperative yielding during Gateway bursts.
-- Secure WebSocket connection to Discord Gateway **v9** using `tokio-tungstenite` + `rustls`.
-- Borrowed outer Gateway JSON parsing with `serde_json::value::RawValue` instead of a generic JSON DOM.
-- HELLO, IDENTIFY, RESUME, HEARTBEAT, HEARTBEAT ACK, RECONNECT, INVALID SESSION, close-code classification, session resume, and reconnect backoff.
-- Tight WebSocket buffers, explicit timeouts, and bounded frontend transport.
+| Platform | Frontend | Output |
+| --- | --- | --- |
+| Windows x86_64 | Native eframe/egui GUI | `diddycord.exe` |
+| Linux x86_64 | Native eframe/egui GUI | `diddycord` |
+| macOS | Native eframe/egui GUI | source build |
+| Android 6+/API 23, ARM64 | NativeActivity eframe/egui GUI | installable `.apk` |
+| Desktop headless | CLI/network harness | `diddycord-headless` |
 
-### Chapter 2 — synchronous frontend state
+The graphical clients currently provide bot-token login, connection state/current bot identity, server navigation, one-to-one DM navigation, text-channel and active-thread timelines, recent-history bootstrap, live Gateway updates, message sending and explicit disconnect.
 
-- Frontend-owned `FrontendState`; no mutex between rendering and Gateway I/O.
-- Budgeted non-blocking event draining with `try_recv()`.
-- Bounded per-channel message histories and bounded channel count.
-- Least-recently-used channel eviction and explicit broadcast-lag accounting.
+## Architecture
 
-### Chapter 3 — cached message lifecycle
+Diddycord is intentionally split into bounded layers:
 
-- Selective `MESSAGE_CREATE`, `MESSAGE_UPDATE`, and `MESSAGE_DELETE` parsing.
-- Message IDs retained so cached messages can be edited and removed.
-- Edits/deletes operate only inside the already bounded channel history; no global message database or message-id hash index is required.
+- a Tokio multi-thread runtime with capped worker counts and cooperative scheduling;
+- Discord Gateway v9 over `tokio-tungstenite` + `rustls`;
+- selective borrowed Serde parsing instead of retaining generic JSON trees;
+- heartbeat, reconnect and session-resume handling;
+- bounded Gateway/REST broadcasts drained synchronously by the frontend;
+- bounded guild/channel/thread/DM topology and message caches;
+- a bounded REST actor for send/edit/delete/history operations;
+- latest-value `watch` channels for network status and current bot identity;
+- native eframe/egui presentation on desktop and Android.
 
-### Chapter 4 — outbound REST dispatcher
+Slow rendering therefore cannot block heartbeats or create an unbounded event queue. The desktop and Android applications reuse the same protocol, cache and REST code paths.
 
-- Bounded asynchronous command actor for text message send/edit/delete operations.
-- Non-blocking synchronous `RestHandle::try_*` submission API.
-- rustls/WebPKI HTTP transport with redirects disabled and Authorization marked sensitive.
-- Conservative Discord 429 handling plus `X-RateLimit-*` pre-emptive delays.
-- Bounded response-body reads and selective JSON parsing.
-- Ambiguous transport failures are not automatically retried, avoiding accidental duplicate message POSTs.
+## Implemented chapters
 
-### Chapter 5 — REST/Gateway state convergence
+| Chapter | Capability |
+| ---: | --- |
+| 1 | asynchronous Gateway backbone |
+| 2 | bounded synchronous frontend state |
+| 3 | cached message create/update/delete lifecycle |
+| 4 | bounded outbound REST dispatcher |
+| 5 | REST/Gateway state convergence |
+| 6 | bounded guild/channel topology |
+| 7 | bounded message-history bootstrap |
+| 8 | bounded active-thread topology |
+| 9 | selected-channel history pager |
+| 10 | cancellable network lifecycle/status watch |
+| 11 | bounded `MESSAGE_DELETE_BULK` handling |
+| 12 | topology-driven message-cache invalidation |
+| 13 | current authenticated bot identity |
+| 14 | bounded one-to-one direct-message topology |
+| 15 | direct-message cache convergence/invalidation |
+| 16 | native Windows/Linux/macOS graphical client |
+| 17 | Android 6+ NativeActivity graphical APK |
 
-- Successful REST send/edit/delete results can be drained directly into `FrontendState` without blocking the renderer.
-- Message creation is an upsert by Discord message ID inside the bounded channel timeline.
-- A REST send result and its later Gateway `MESSAGE_CREATE` echo therefore converge to one cached message instead of producing duplicates.
-- REST lag and Gateway lag are accounted separately.
-- Failed REST operations do not mutate presentation state, avoiding rollback bookkeeping.
-
-### Chapter 6 — guild/channel topology
-
-- Selective `GUILD_CREATE`, `GUILD_UPDATE`, `GUILD_DELETE`, `CHANNEL_CREATE`, `CHANNEL_UPDATE`, and `CHANNEL_DELETE` handling.
-- Large guild payloads retain only guild identity/name/availability and channel ID/name/type/position/parent topology; members, roles, presences, emojis and permission metadata are skipped.
-- `TopologyState` uses bounded vector-backed guild/channel storage instead of global hash indexes.
-- Default limits are 256 guilds and 512 channels per guild, with configurable limits and drop accounting.
-- Temporary guild unavailability preserves cached topology; a true guild delete removes it.
-
-### Chapter 7 — bounded message-history bootstrap
-
-- `RestHandle::try_fetch_messages()` loads the newest 1–100 messages for a selected channel without blocking the frontend.
-- `RestHandle::try_fetch_messages_before()` provides explicit backward pagination using a validated Discord message snowflake.
-- History responses use a separate hard 2 MiB body ceiling and selective borrowed parsing; embeds, attachments, reactions and unrelated metadata are not retained.
-- Fetched messages merge into the existing bounded channel timeline in Discord snowflake order rather than creating a second history store.
-- Already cached live/Gateway messages win over history snapshots, preventing a late REST response from overwriting a newer edit.
-- Cache capacity still keeps the newest configured messages, so repeated backward pagination cannot grow memory without bound.
-
-### Chapter 8 — bounded active-thread topology
-
-- Selective active-thread bootstrap from `GUILD_CREATE` plus `THREAD_CREATE`, `THREAD_UPDATE`, `THREAD_DELETE`, and `THREAD_LIST_SYNC`.
-- Thread cache retains only navigation fields: ID, guild, parent channel, name, type, archived state, and locked state.
-- Active threads live inside each bounded guild entry with a configurable per-guild cap; there is no global thread-ID hash database.
-- Scoped `THREAD_LIST_SYNC` replaces only the named parent-channel subsets, while full sync replaces the complete guild thread set.
-- Archived threads disappear from active navigation, and deleting a parent channel also removes its active child threads.
-
-### Chapter 9 — selected-channel history pager
-
-- `HistoryPager` turns the low-level Chapter 7 history endpoints into a tiny synchronous frontend controller.
-- Selecting a channel resets stale pagination state and guarantees at most one history request is in flight for that selection.
-- `try_load_latest()` submits the initial recent page; `try_load_older()` automatically anchors backward pagination to the oldest message currently cached for that channel.
-- Matching REST completions release the pending slot and short pages mark the channel history as exhausted.
-- Unrelated or stale REST completions are ignored by request ID, so switching channels cannot corrupt the new selection's pagination state.
-- Page size is clamped to Discord's 1–100 range and all submissions still use the existing bounded REST queue.
-
-### Chapter 10 — cancellable network lifecycle
-
-- `NetworkBackbone::control()` exposes a cloneable, low-overhead control handle before the Gateway task is moved into the runtime.
-- `NetworkControl::shutdown()` cancels pending connect/read/reconnect waits and transitions the Gateway loop to `Stopped` without blocking a frontend or mobile lifecycle callback.
-- `NetworkStatus` reports `Idle`, `Connecting`, `Identifying`, `Resuming`, `Ready`, `Reconnecting`, `Stopped`, and fatal close states through a latest-value Tokio `watch` channel.
-- Slow frontends cannot build a lifecycle-event backlog: status observation is level-triggered and only the newest state is retained.
-- Recoverable disconnects preserve existing resume/reidentify and bounded backoff behavior while publishing retry state and attempt count.
-- A shutdown requested before `run()` performs no network I/O, which makes Android activity/service teardown deterministic and testable.
-
-### Chapter 11 — bounded bulk message deletion
-
-- Gateway `MESSAGE_DELETE_BULK` events now converge with the same cached deletion semantics as ordinary `MESSAGE_DELETE` events.
-- A custom Serde sequence visitor bounds each bulk payload to at most 100 retained message IDs instead of allowing payload-controlled transient allocation growth.
-- Channel and message identifiers are validated as decimal Discord snowflakes before any frontend deletion event is emitted.
-- Malformed or over-limit payloads are rejected atomically rather than partially mutating the presentation cache.
-- Accepted IDs fan out through the existing bounded Gateway broadcast, so the network loop still cannot be blocked by a slow frontend or create an unbounded queue.
-
-### Chapter 12 — topology-driven cache invalidation
-
-- `FrontendState` now retires message timelines when their guild, channel, or thread disappears from the bounded navigation topology.
-- True `GUILD_DELETE` events purge known guild channel/thread timelines, while temporary `unavailable=true` events preserve both topology and messages.
-- Deleting a parent channel also purges active child-thread timelines; archived/deleted threads and stale `THREAD_LIST_SYNC` entries are removed immediately.
-- Refreshed `GUILD_CREATE` snapshots retire channels that disappeared from the replacement topology instead of waiting for message-cache LRU eviction.
-- A bounded FIFO of retired channel/thread snowflakes prevents late REST history responses or stale message events from resurrecting deleted timelines.
-- Active thread/create/sync events clear matching tombstones, allowing Discord threads to be unarchived under the same snowflake without losing subsequent messages.
-
-### Chapter 13 — current bot identity
-
-- `READY` selectively captures the authenticated bot's ID, username, global display name, discriminator, avatar hash, and bot flag while ignoring unrelated account/application metadata.
-- `USER_UPDATE` refreshes identity without touching the high-volume frontend event stream.
-- Identity uses `watch<Option<Arc<CurrentUser>>>`: there is no growing queue, and multiple consumers share the same allocated strings.
-- `NetworkControl::self_user()` provides an immediate snapshot while `subscribe_self_user()` supports reactive desktop/mobile UI updates.
-- `CurrentUser::display_name()` prefers Discord's global name and falls back to the username.
-
-### Chapter 14 — bounded direct-message topology
-
-- One-to-one DM `CHANNEL_CREATE`, `CHANNEL_UPDATE`, and `CHANNEL_DELETE` payloads are recognized separately from guild channels.
-- DM parsing retains only the channel ID and first recipient's ID, username, global name, and avatar hash; unrelated channel/user metadata is skipped.
-- The recipient array is consumed with a custom Serde visitor that keeps only the first entry rather than allocating a payload-sized recipient list.
-- `DirectTopologyState` is a vector-backed LRU cache with a default capacity of 64 channels, configurable by the caller.
-- Known DM entries are touched by message lifecycle events, so active conversations remain hot in the navigation cache.
-- `DirectTopologyState::drain()` is non-blocking and budgeted, with separate direct-event, broadcast-lag, and LRU-drop accounting.
-- Group-DM/user-token semantics are deliberately outside the bot/application model.
+Detailed implementation notes live in `docs/`.
 
 ## Authentication
 
-The core uses a Discord **bot/application token**. It intentionally does not implement user-token/self-bot authentication.
-
-For the desktop harness:
+The GUI asks for a Discord bot token directly. The headless harness can use environment variables:
 
 ```text
 DISCORD_BOT_TOKEN=<bot token>
 DISCORD_INTENTS=37377
 ```
 
-`DISCORD_INTENTS` is optional. The default enables `GUILDS`, `GUILD_MESSAGES`, `DIRECT_MESSAGES`, and `MESSAGE_CONTENT`. Enable the Message Content privileged intent in the Discord Developer Portal when required for the bot.
+`DISCORD_INTENTS` is optional. The default enables `GUILDS`, `GUILD_MESSAGES`, `DIRECT_MESSAGES`, and `MESSAGE_CONTENT`. Enable the Message Content privileged intent in the Discord Developer Portal when the bot/application requires it.
 
-Do not commit `.env` files or tokens. `.env.example` exists only as a variable-name reference.
+Never commit tokens or `.env` files. `.env.example` contains variable names only.
 
-## Build
+## Desktop build
 
-The project pins Rust **1.77.2** because ordinary Rust Windows targets raised their Windows baseline after that toolchain generation. This keeps the project buildable for the Windows 7 target requirement while CI checks the same MSRV on modern runners.
+Diddycord pins Rust **1.77.2** to preserve the Windows 7 baseline while still supporting the GUI dependency set.
 
 ```bash
-cargo build --release
+rustup override set 1.77.2
+cargo build --release --bin diddycord
 ```
 
-The release profile is deliberately runtime/footprint oriented:
+Run the graphical desktop app with:
+
+```bash
+cargo run --release --bin diddycord
+```
+
+The old headless harness remains available:
+
+```bash
+DISCORD_BOT_TOKEN=... cargo run --release --bin diddycord-headless
+```
+
+The release profile is optimized for runtime performance/footprint:
 
 ```toml
 [profile.release]
@@ -157,21 +104,40 @@ strip = "symbols"
 incremental = false
 ```
 
-## Android 6 / API 23
+## Android 6+ graphical APK
 
-The core itself does not depend on a desktop GUI API. CI cross-checks `aarch64-linux-android` at API 23. The eventual Android application should expose the library through a small JNI/NDK bridge and inject credentials through the application layer rather than environment variables.
+Android uses the same eframe/egui 0.27.2 UI stack through `winit` 0.29.15 and `android-activity` 0.5.2 NativeActivity. The application package is `io.github.diddycord.client`.
 
-The Galaxy S6 family exists in both 64-bit and 32-bit userspace variants depending on firmware/device configuration, so final packaging should verify the target handset before dropping `armeabi-v7a` support.
+Current Android packaging targets:
 
-## Frontend usage
+- minimum SDK: API 23 / Android 6;
+- target SDK: API 35;
+- ABI: `aarch64-linux-android`;
+- permission: `android.permission.INTERNET`;
+- cleartext traffic disabled;
+- NDK: 27.2.12479018;
+- packaging tool: `cargo-apk` 0.10.0.
 
-Gateway receive/lifecycle path:
+The mobile UI uses a touch-oriented single-pane flow: **servers/DMs → channels → timeline/composer**, with larger interactive controls and explicit back navigation.
+
+To build locally after installing the Android SDK/NDK, Rust Android target and `cargo-apk`:
+
+```bash
+rustup target add aarch64-linux-android --toolchain 1.77.2
+cargo apk build --release --lib
+```
+
+`cargo-apk` requires signing for release-profile APKs. CI creates an ephemeral signing certificate so every pull request can prove that a real installable APK packages successfully. For update-safe official releases, configure a persistent keystore through the repository secrets `DIDDYCORD_ANDROID_KEYSTORE_B64` and `DIDDYCORD_ANDROID_KEYSTORE_PASSWORD`. The release workflow automatically uses them when present and records when an ephemeral fallback was used.
+
+See `docs/android-gui.md` for the lifecycle, packaging and signing design.
+
+## Frontend model
+
+A frontend does not own the network runtime. It receives bounded events and applies them to synchronous presentation state:
 
 ```rust
 let backbone = NetworkBackbone::new(config, 256);
 let control = backbone.control();
-let mut network_status = control.subscribe_status();
-let self_user = control.subscribe_self_user();
 let mut gateway_events = backbone.subscribe();
 let mut direct_events = backbone.subscribe();
 let mut state = FrontendState::new(64, 128);
@@ -184,31 +150,12 @@ runtime.spawn(async move {
 // Once per frame/tick:
 let gateway_report = state.drain(&mut gateway_events, 64);
 let direct_report = direct.drain(&mut direct_events, 64);
-let current_status = *network_status.borrow();
-if let Some(user) = self_user.borrow().as_ref() {
-    let display_name = user.display_name();
-    let avatar_hash = user.avatar_hash.as_deref();
-}
 
-for guild in state.topology().guilds() {
-    for channel in state.topology().channels(guild.id) {
-        let _ = channel.name.as_deref();
-    }
-    for thread in state.topology().threads(guild.id) {
-        let _ = thread.parent_id.as_deref();
-    }
-}
-
-for dm in direct.channels() {
-    let display_name = dm.display_name();
-    let channel_id = dm.id.as_ref();
-}
-
-// During application/service shutdown:
+// During application/activity shutdown:
 control.shutdown();
 ```
 
-REST action/history path:
+REST work follows the same bounded model:
 
 ```rust
 let (rest, worker) = RestDispatcher::new(&token, 32, 64)?;
@@ -220,34 +167,30 @@ let send_request = rest.try_send_message(channel_id, "hello")?;
 history.select_channel(channel_id);
 let initial_history = history.try_load_latest(&rest)?;
 
-// Once per frame/tick, process REST results without blocking.
 while let Ok(event) = rest_events.try_recv() {
     state.apply_rest(event.as_ref());
     let completion = history.observe_rest(event.as_ref());
 }
-
-// When the user scrolls to the top of the cached timeline:
-let older_history = history.try_load_older(&state, &rest)?;
 ```
-
-History fetching remains caller-driven: selecting or scrolling a channel can request a page, while idle channels consume no REST bandwidth or history memory beyond the configured presentation cache.
-
-All Gateway-facing transports are bounded: a slow frontend cannot block heartbeats or create an unbounded queue.
 
 ## Repository layout
 
 ```text
-src/main.rs          desktop Gateway harness
-src/lib.rs           public library surface
-src/gateway/         Gateway transport, selective parsers, DM topology, identity, heartbeat, reconnect and lifecycle control
-src/history.rs       selected-channel history paging state machine
-src/rest.rs          bounded Discord REST actor, outbound actions and message-history reads
-src/runtime.rs       low-overhead Tokio runtime configuration
-src/state.rs         bounded synchronous presentation cache and topology-driven invalidation
-src/topology.rs      bounded guild/channel/thread navigation state
-docs/                architecture notes by chapter
+src/main.rs                    graphical desktop entry point / non-desktop fallback harness
+src/bin/diddycord-headless.rs  explicit headless desktop client
+src/lib.rs                     public core surface + Android NativeActivity entry point
+src/gui_app.rs                 shared desktop/Android graphical presentation layer
+src/gateway/                   Gateway transport and selective event parsers
+src/history.rs                 selected-channel history paging state machine
+src/rest.rs                    bounded Discord REST actor
+src/runtime.rs                 Tokio runtime configuration
+src/state.rs                   bounded presentation cache/invalidation
+src/topology.rs                bounded guild/channel/thread navigation state
+docs/                          architecture and frontend notes
 ```
 
-## Security boundary
+## Compatibility and security boundary
 
-Never hard-code or commit Discord credentials. The Gateway and REST layers treat the token as configuration only and do not log it. REST redirects are disabled to avoid forwarding Authorization to another host.
+The desktop GUI uses exact `eframe = 0.27.2` with pinned transitive dependencies to stay inside the Rust 1.77.2/Windows 7 compatibility envelope. Android uses the same eframe generation and keeps API 23 as the minimum supported API.
+
+The Gateway and REST layers treat the Discord token as configuration only and do not log it. REST redirects are disabled so Authorization cannot be forwarded to another host. Android cleartext traffic is disabled. User-token/self-bot behavior is outside the project boundary.

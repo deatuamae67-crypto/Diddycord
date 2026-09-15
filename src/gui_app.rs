@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use diddycord::{
+use crate::{
     build_runtime, install_crypto_provider, DirectTopologyState, FrontendEvent, FrontendState,
     GatewayConfig, NetworkBackbone, NetworkControl, NetworkStatus, RestDispatcher, RestEvent,
     RestHandle, DEFAULT_INTENTS,
@@ -17,7 +17,8 @@ const GATEWAY_EVENT_BUDGET: usize = 512;
 const REST_EVENT_BUDGET: usize = 256;
 const DEFAULT_HISTORY_PAGE: u8 = 50;
 
-pub fn run() -> Result<(), eframe::Error> {
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub(crate) fn run_desktop() -> Result<(), eframe::Error> {
     install_crypto_provider();
 
     let options = eframe::NativeOptions {
@@ -30,14 +31,54 @@ pub fn run() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Diddycord",
         options,
-        Box::new(|_creation_context| Box::new(DiddycordApp::default())),
+        Box::new(|creation_context| Box::new(DiddycordApp::new(creation_context))),
+    )
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn run_android(
+    app: winit::platform::android::activity::AndroidApp,
+) -> Result<(), eframe::Error> {
+    use winit::platform::android::EventLoopBuilderExtAndroid as _;
+
+    install_crypto_provider();
+
+    // eframe 0.27 predates NativeOptions::android_app. Its supported escape hatch is the
+    // event-loop builder hook, which lets us attach the AndroidApp required by winit 0.29.
+    let mut options = eframe::NativeOptions::default();
+    options.event_loop_builder = Some(Box::new(move |builder| {
+        builder.with_android_app(app);
+    }));
+
+    eframe::run_native(
+        "Diddycord",
+        options,
+        Box::new(|creation_context| Box::new(DiddycordApp::new(creation_context))),
     )
 }
 
 struct DiddycordApp {
     token: String,
-    session: Option<DesktopSession>,
+    session: Option<GuiSession>,
     connect_error: Option<String>,
+}
+
+impl DiddycordApp {
+    fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
+        #[cfg(target_os = "android")]
+        {
+            let mut style = (*creation_context.egui_ctx.style()).clone();
+            style.spacing.interact_size.y = 44.0;
+            style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+            style.spacing.button_padding = egui::vec2(10.0, 8.0);
+            creation_context.egui_ctx.set_style(style);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        let _ = creation_context;
+
+        Self::default()
+    }
 }
 
 impl Default for DiddycordApp {
@@ -71,7 +112,16 @@ impl eframe::App for DiddycordApp {
                 .as_mut()
                 .expect("session existence checked before graphical update");
             session.poll();
-            show_connected(ctx, session)
+
+            #[cfg(target_os = "android")]
+            {
+                show_connected_mobile(ctx, session)
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                show_connected_desktop(ctx, session)
+            }
         };
 
         if disconnect {
@@ -89,7 +139,8 @@ impl DiddycordApp {
     fn show_login(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space((ui.available_height() * 0.18).max(32.0));
+                let top_space = (ui.available_height() * 0.14).max(20.0).min(100.0);
+                ui.add_space(top_space);
                 ui.heading("Diddycord");
                 ui.label("Low-overhead graphical Discord bot client");
                 ui.add_space(20.0);
@@ -99,8 +150,9 @@ impl DiddycordApp {
                     ui.label("Discord bot token");
                     let token_edit = egui::TextEdit::singleline(&mut self.token)
                         .password(true)
+                        .desired_width(f32::INFINITY)
                         .hint_text("Paste a bot token from the Discord Developer Portal");
-                    ui.add_sized([500.0, 28.0], token_edit);
+                    ui.add(token_edit);
                     ui.add_space(8.0);
                     ui.small("Diddycord accepts bot/application tokens only. User-token/self-bot login is intentionally unsupported.");
 
@@ -116,7 +168,7 @@ impl DiddycordApp {
                         .clicked()
                     {
                         let token = self.token.trim().to_owned();
-                        match DesktopSession::connect(token) {
+                        match GuiSession::connect(token) {
                             Ok(session) => {
                                 self.token.clear();
                                 self.connect_error = None;
@@ -131,7 +183,7 @@ impl DiddycordApp {
     }
 }
 
-struct DesktopSession {
+struct GuiSession {
     control: NetworkControl,
     gateway_events: broadcast::Receiver<Arc<FrontendEvent>>,
     direct_events: broadcast::Receiver<Arc<FrontendEvent>>,
@@ -149,7 +201,7 @@ struct DesktopSession {
     notice: Option<String>,
 }
 
-impl DesktopSession {
+impl GuiSession {
     fn connect(token: String) -> Result<Self, String> {
         if token.is_empty() {
             return Err("The bot token cannot be empty.".to_owned());
@@ -250,9 +302,22 @@ impl DesktopSession {
             }
         }
     }
+
+    fn back_to_channels(&mut self) {
+        self.selected_channel = None;
+        self.selected_channel_name = None;
+        self.compose.clear();
+    }
+
+    fn back_to_servers(&mut self) {
+        self.back_to_channels();
+        self.selected_guild = None;
+        self.direct_mode = false;
+    }
 }
 
-fn show_connected(ctx: &egui::Context, session: &mut DesktopSession) -> bool {
+#[cfg(not(target_os = "android"))]
+fn show_connected_desktop(ctx: &egui::Context, session: &mut GuiSession) -> bool {
     let mut disconnect = false;
 
     egui::TopBottomPanel::top("diddycord_top_bar").show(ctx, |ui| {
@@ -290,7 +355,61 @@ fn show_connected(ctx: &egui::Context, session: &mut DesktopSession) -> bool {
     disconnect
 }
 
-fn show_guilds(ui: &mut egui::Ui, session: &mut DesktopSession) {
+#[cfg(target_os = "android")]
+fn show_connected_mobile(ctx: &egui::Context, session: &mut GuiSession) -> bool {
+    let mut disconnect = false;
+    let status = network_status_label(session.control.status());
+    let self_name = session
+        .control
+        .self_user()
+        .map(|user| user.display_name().to_owned());
+
+    egui::TopBottomPanel::top("diddycord_mobile_top_bar").show(ctx, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if session.selected_channel.is_some() {
+                if ui.button("‹ Channels").clicked() {
+                    session.back_to_channels();
+                }
+            } else if session.direct_mode || session.selected_guild.is_some() {
+                if ui.button("‹ Servers").clicked() {
+                    session.back_to_servers();
+                }
+            } else {
+                ui.heading("Diddycord");
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Disconnect").clicked() {
+                    disconnect = true;
+                }
+            });
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.small(status.as_str());
+            if let Some(name) = self_name.as_deref() {
+                ui.separator();
+                ui.small(format!("Signed in as {name}"));
+            }
+        });
+        ui.add_space(2.0);
+    });
+
+    egui::CentralPanel::default().show(ctx, |ui| {
+        if session.selected_channel.is_some() {
+            show_messages(ui, session);
+        } else if session.direct_mode || session.selected_guild.is_some() {
+            show_channels(ui, session);
+        } else {
+            show_guilds(ui, session);
+        }
+    });
+
+    disconnect
+}
+
+fn show_guilds(ui: &mut egui::Ui, session: &mut GuiSession) {
     ui.heading("Servers");
     ui.separator();
 
@@ -330,7 +449,7 @@ fn show_guilds(ui: &mut egui::Ui, session: &mut DesktopSession) {
     });
 }
 
-fn show_channels(ui: &mut egui::Ui, session: &mut DesktopSession) {
+fn show_channels(ui: &mut egui::Ui, session: &mut GuiSession) {
     if session.direct_mode {
         ui.heading("Direct messages");
         ui.separator();
@@ -444,7 +563,7 @@ fn show_channels(ui: &mut egui::Ui, session: &mut DesktopSession) {
     });
 }
 
-fn show_messages(ui: &mut egui::Ui, session: &mut DesktopSession) {
+fn show_messages(ui: &mut egui::Ui, session: &mut GuiSession) {
     let Some(channel_id) = session.selected_channel.as_ref().cloned() else {
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.35).max(24.0));
@@ -461,10 +580,16 @@ fn show_messages(ui: &mut egui::Ui, session: &mut DesktopSession) {
     ui.heading(format!("# {title}"));
     ui.separator();
 
-    let available_for_messages = (ui.available_height() - 110.0).max(120.0);
+    let composer_height = if cfg!(target_os = "android") {
+        150.0
+    } else {
+        110.0
+    };
+    let available_for_messages = (ui.available_height() - composer_height).max(120.0);
     egui::ScrollArea::vertical()
         .max_height(available_for_messages)
         .auto_shrink([false, false])
+        .stick_to_bottom(true)
         .show(ui, |ui| {
             let mut count = 0usize;
             for message in session.state.messages(channel_id.as_ref()) {
@@ -485,28 +610,46 @@ fn show_messages(ui: &mut egui::Ui, session: &mut DesktopSession) {
         ui.small(notice);
     }
 
+    #[cfg(target_os = "android")]
+    {
+        let editor = egui::TextEdit::multiline(&mut session.compose)
+            .desired_rows(2)
+            .hint_text("Message this channel")
+            .desired_width(f32::INFINITY);
+        ui.add(editor);
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                show_send_button(ui, session, channel_id.as_ref());
+            });
+        });
+    }
+
+    #[cfg(not(target_os = "android"))]
     ui.horizontal(|ui| {
         let editor = egui::TextEdit::multiline(&mut session.compose)
             .desired_rows(2)
             .hint_text("Message this channel")
             .desired_width(f32::INFINITY);
         ui.add(editor);
-
-        let can_send = !session.compose.trim().is_empty() && !session.worker_finished;
-        if ui
-            .add_enabled(can_send, egui::Button::new("Send"))
-            .clicked()
-        {
-            let content = session.compose.trim().to_owned();
-            match session.rest.try_send_message(channel_id.as_ref(), &content) {
-                Ok(_) => {
-                    session.compose.clear();
-                    session.notice = None;
-                }
-                Err(error) => session.notice = Some(error.to_string()),
-            }
-        }
+        show_send_button(ui, session, channel_id.as_ref());
     });
+}
+
+fn show_send_button(ui: &mut egui::Ui, session: &mut GuiSession, channel_id: &str) {
+    let can_send = !session.compose.trim().is_empty() && !session.worker_finished;
+    if ui
+        .add_enabled(can_send, egui::Button::new("Send"))
+        .clicked()
+    {
+        let content = session.compose.trim().to_owned();
+        match session.rest.try_send_message(channel_id, &content) {
+            Ok(_) => {
+                session.compose.clear();
+                session.notice = None;
+            }
+            Err(error) => session.notice = Some(error.to_string()),
+        }
+    }
 }
 
 fn network_status_label(status: NetworkStatus) -> String {
