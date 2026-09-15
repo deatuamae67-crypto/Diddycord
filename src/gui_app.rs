@@ -16,6 +16,8 @@ use tokio::sync::broadcast;
 const GATEWAY_EVENT_BUDGET: usize = 512;
 const REST_EVENT_BUDGET: usize = 256;
 const DEFAULT_HISTORY_PAGE: u8 = 50;
+const MAX_UNREAD_CHANNELS: usize = 128;
+const MAX_UNREAD_PER_CHANNEL: u16 = 99;
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub(crate) fn run_desktop() -> Result<(), eframe::Error> {
@@ -183,10 +185,16 @@ impl DiddycordApp {
     }
 }
 
+struct UnreadChannel {
+    channel_id: Box<str>,
+    count: u16,
+}
+
 struct GuiSession {
     control: NetworkControl,
     gateway_events: broadcast::Receiver<Arc<FrontendEvent>>,
     direct_events: broadcast::Receiver<Arc<FrontendEvent>>,
+    activity_events: broadcast::Receiver<Arc<FrontendEvent>>,
     rest_events: broadcast::Receiver<Arc<RestEvent>>,
     rest: RestHandle,
     state: FrontendState,
@@ -197,6 +205,7 @@ struct GuiSession {
     direct_mode: bool,
     selected_channel: Option<Box<str>>,
     selected_channel_name: Option<Box<str>>,
+    unread_channels: Vec<UnreadChannel>,
     compose: String,
     notice: Option<String>,
 }
@@ -214,6 +223,7 @@ impl GuiSession {
         let control = backbone.control();
         let gateway_events = backbone.subscribe();
         let direct_events = backbone.subscribe();
+        let activity_events = backbone.subscribe();
 
         let (rest, rest_dispatcher) = RestDispatcher::new(&token, 64, REST_EVENT_BUDGET)
             .map_err(|error| error.to_string())?;
@@ -236,6 +246,7 @@ impl GuiSession {
             control,
             gateway_events,
             direct_events,
+            activity_events,
             rest_events,
             rest,
             state: FrontendState::new(128, 200),
@@ -246,12 +257,14 @@ impl GuiSession {
             direct_mode: false,
             selected_channel: None,
             selected_channel_name: None,
+            unread_channels: Vec::with_capacity(16),
             compose: String::new(),
             notice: None,
         })
     }
 
     fn poll(&mut self) {
+        self.drain_activity(GATEWAY_EVENT_BUDGET);
         self.state
             .drain(&mut self.gateway_events, GATEWAY_EVENT_BUDGET);
         self.direct
@@ -275,6 +288,80 @@ impl GuiSession {
         }
     }
 
+    fn drain_activity(&mut self, budget: usize) {
+        let mut processed = 0usize;
+        while processed < budget {
+            match self.activity_events.try_recv() {
+                Ok(event) => {
+                    processed += 1;
+                    self.apply_activity(event.as_ref());
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    processed += 1;
+                    self.unread_channels.clear();
+                }
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+    }
+
+    fn apply_activity(&mut self, event: &FrontendEvent) {
+        match event {
+            FrontendEvent::Message(message) => {
+                let channel_id = message.channel_id.as_ref();
+                if self.selected_channel.as_deref() == Some(channel_id) {
+                    self.clear_unread(channel_id);
+                } else {
+                    self.mark_unread(channel_id);
+                }
+            }
+            FrontendEvent::ChannelDelete(delete) => self.clear_unread(delete.channel_id.as_ref()),
+            FrontendEvent::DirectChannelDelete(delete) => {
+                self.clear_unread(delete.channel_id.as_ref())
+            }
+            FrontendEvent::ThreadDelete(delete) => self.clear_unread(delete.id.as_ref()),
+            _ => {}
+        }
+    }
+
+    fn mark_unread(&mut self, channel_id: &str) {
+        if let Some(index) = self
+            .unread_channels
+            .iter()
+            .position(|unread| unread.channel_id.as_ref() == channel_id)
+        {
+            let mut unread = self.unread_channels.remove(index);
+            unread.count = unread
+                .count
+                .saturating_add(1)
+                .min(MAX_UNREAD_PER_CHANNEL);
+            self.unread_channels.push(unread);
+            return;
+        }
+
+        if self.unread_channels.len() >= MAX_UNREAD_CHANNELS {
+            self.unread_channels.remove(0);
+        }
+        self.unread_channels.push(UnreadChannel {
+            channel_id: Box::<str>::from(channel_id),
+            count: 1,
+        });
+    }
+
+    fn clear_unread(&mut self, channel_id: &str) {
+        self.unread_channels
+            .retain(|unread| unread.channel_id.as_ref() != channel_id);
+    }
+
+    fn unread_count(&self, channel_id: &str) -> u16 {
+        self.unread_channels
+            .iter()
+            .find(|unread| unread.channel_id.as_ref() == channel_id)
+            .map(|unread| unread.count)
+            .unwrap_or(0)
+    }
+
     fn select_guild(&mut self, guild_id: Box<str>) {
         self.direct_mode = false;
         self.selected_guild = Some(guild_id);
@@ -291,6 +378,7 @@ impl GuiSession {
 
     fn select_channel(&mut self, channel_id: Box<str>, name: Box<str>) {
         let changed = self.selected_channel.as_deref() != Some(channel_id.as_ref());
+        self.clear_unread(channel_id.as_ref());
         self.selected_channel = Some(channel_id.clone());
         self.selected_channel_name = Some(name);
         if changed && self.state.channel_message_count(channel_id.as_ref()) == 0 {
@@ -477,7 +565,8 @@ fn show_channels(ui: &mut egui::Ui, session: &mut GuiSession) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (id, name) in channels {
                 let selected = session.selected_channel.as_deref() == Some(id.as_ref());
-                if ui.selectable_label(selected, name.as_ref()).clicked() {
+                let label = unread_label(name.to_string(), session.unread_count(id.as_ref()));
+                if ui.selectable_label(selected, label).clicked() {
                     session.select_channel(id, name);
                 }
             }
@@ -548,6 +637,7 @@ fn show_channels(ui: &mut egui::Ui, session: &mut GuiSession) {
             } else {
                 format!("· {}", name)
             };
+            let label = unread_label(label, session.unread_count(id.as_ref()));
             let response =
                 ui.add_enabled(text_capable, egui::SelectableLabel::new(selected, label));
             if response.clicked() {
@@ -564,7 +654,8 @@ fn show_channels(ui: &mut egui::Ui, session: &mut GuiSession) {
             ui.label(egui::RichText::new("Active threads").strong());
             for (id, name) in threads {
                 let selected = session.selected_channel.as_deref() == Some(id.as_ref());
-                if ui.selectable_label(selected, format!("↳ {name}")).clicked() {
+                let label = unread_label(format!("↳ {name}"), session.unread_count(id.as_ref()));
+                if ui.selectable_label(selected, label).clicked() {
                     session.select_channel(id, name);
                 }
             }
@@ -658,6 +749,14 @@ fn show_send_button(ui: &mut egui::Ui, session: &mut GuiSession, channel_id: &st
             }
             Err(error) => session.notice = Some(error.to_string()),
         }
+    }
+}
+
+fn unread_label(label: String, count: u16) -> String {
+    if count == 0 {
+        label
+    } else {
+        format!("{label}  • {count}")
     }
 }
 
