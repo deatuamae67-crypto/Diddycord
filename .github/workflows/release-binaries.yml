@@ -33,7 +33,20 @@ jobs:
           VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
           test -n "$VERSION"
           TAG="v$VERSION"
-          git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null
+
+          # The tag workflow is triggered by the same successful main CI run as this workflow.
+          # Give it time to publish the immutable version tag instead of racing it.
+          for attempt in $(seq 1 24); do
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 24 ]; then
+              echo "Timed out waiting for refs/tags/$TAG" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -173,6 +186,6 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "Diddycord $TAG" \
-              --notes "Diddycord $TAG compiled release.\n\nDownloads:\n- Windows x86_64: ZIP containing diddycord.exe\n- Linux x86_64: tar.gz containing diddycord\n- Android 6+/API 23 aarch64: native command-line executable (not an APK)\n\nThe executable is the current headless Discord bot client core. Set DISCORD_BOT_TOKEN before running; DISCORD_INTENTS is optional. SHA-256 checksum files are included for every archive."
+              --notes "Diddycord $TAG compiled release.\n\nDownloads:\n- Windows x86_64: graphical Diddycord app (ZIP containing diddycord.exe)\n- Linux x86_64: graphical Diddycord app (tar.gz containing diddycord)\n- Android 6+/API 23 aarch64: native headless executable for the shared core (not yet an APK)\n\nThe Windows and Linux builds open the native Diddycord graphical interface and accept bot/application tokens only. The Android graphical APK is a later milestone. SHA-256 checksum files are included for every archive."
           fi
           gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
