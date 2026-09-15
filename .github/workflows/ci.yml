@@ -76,7 +76,23 @@ jobs:
           printf '#!/bin/sh\nexec "%s/llvm-ar" "$@"\n' "$TOOLCHAIN" > .ci/android-ar
           chmod +x .ci/android-cc .ci/android-ar
           cargo check --target aarch64-linux-android --lib
+      - name: Create CI APK signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          keytool -genkeypair \
+            -keystore "$RUNNER_TEMP/diddycord-ci.keystore" \
+            -storepass android \
+            -keypass android \
+            -alias diddycord-ci \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Diddycord CI,O=Diddycord,C=PT"
       - name: Build installable Android APK
+        env:
+          CARGO_APK_RELEASE_KEYSTORE: ${{ runner.temp }}/diddycord-ci.keystore
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
           export ANDROID_NDK_HOME="$NDK_HOME"
