@@ -1,0 +1,210 @@
+name: Chapter 21 one-shot unread patch
+
+on:
+  push:
+    branches:
+      - chapter-21-local-unread
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: chapter-21-local-unread
+      - name: Add bounded local unread markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/gui_app.rs")
+          text = path.read_text()
+
+          replacements = [
+              (
+                  "const DEFAULT_HISTORY_PAGE: u8 = 50;",
+                  "const DEFAULT_HISTORY_PAGE: u8 = 50;\nconst MAX_UNREAD_CHANNELS: usize = 128;\nconst MAX_UNREAD_PER_CHANNEL: u16 = 99;",
+                  "unread bounds",
+              ),
+              (
+                  "struct GuiSession {\n    control: NetworkControl,",
+                  "struct UnreadChannel {\n    channel_id: Box<str>,\n    count: u16,\n}\n\nstruct GuiSession {\n    control: NetworkControl,",
+                  "unread record",
+              ),
+              (
+                  "    gateway_events: broadcast::Receiver<Arc<FrontendEvent>>,\n    direct_events: broadcast::Receiver<Arc<FrontendEvent>>,",
+                  "    gateway_events: broadcast::Receiver<Arc<FrontendEvent>>,\n    direct_events: broadcast::Receiver<Arc<FrontendEvent>>,\n    activity_events: broadcast::Receiver<Arc<FrontendEvent>>,",
+                  "activity receiver field",
+              ),
+              (
+                  "    selected_channel_name: Option<Box<str>>,\n    compose: String,",
+                  "    selected_channel_name: Option<Box<str>>,\n    unread_channels: Vec<UnreadChannel>,\n    compose: String,",
+                  "unread state field",
+              ),
+              (
+                  "        let gateway_events = backbone.subscribe();\n        let direct_events = backbone.subscribe();",
+                  "        let gateway_events = backbone.subscribe();\n        let direct_events = backbone.subscribe();\n        let activity_events = backbone.subscribe();",
+                  "activity subscription",
+              ),
+              (
+                  "            gateway_events,\n            direct_events,\n            rest_events,",
+                  "            gateway_events,\n            direct_events,\n            activity_events,\n            rest_events,",
+                  "activity receiver initialization",
+              ),
+              (
+                  "            selected_channel: None,\n            selected_channel_name: None,\n            compose: String::new(),",
+                  "            selected_channel: None,\n            selected_channel_name: None,\n            unread_channels: Vec::with_capacity(16),\n            compose: String::new(),",
+                  "unread state initialization",
+              ),
+              (
+                  "    fn poll(&mut self) {\n        self.state",
+                  "    fn poll(&mut self) {\n        self.drain_activity(GATEWAY_EVENT_BUDGET);\n        self.state",
+                  "activity draining",
+              ),
+              (
+                  "    fn select_guild(&mut self, guild_id: Box<str>) {",
+                  '''    fn drain_activity(&mut self, budget: usize) {
+        let mut processed = 0usize;
+        while processed < budget {
+            match self.activity_events.try_recv() {
+                Ok(event) => {
+                    processed += 1;
+                    self.apply_activity(event.as_ref());
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    processed += 1;
+                    self.unread_channels.clear();
+                }
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+    }
+
+    fn apply_activity(&mut self, event: &FrontendEvent) {
+        match event {
+            FrontendEvent::Message(message) => {
+                let channel_id = message.channel_id.as_ref();
+                if self.selected_channel.as_deref() == Some(channel_id) {
+                    self.clear_unread(channel_id);
+                } else {
+                    self.mark_unread(channel_id);
+                }
+            }
+            FrontendEvent::ChannelDelete(delete) => self.clear_unread(delete.channel_id.as_ref()),
+            FrontendEvent::DirectChannelDelete(delete) => {
+                self.clear_unread(delete.channel_id.as_ref())
+            }
+            FrontendEvent::ThreadDelete(delete) => self.clear_unread(delete.id.as_ref()),
+            _ => {}
+        }
+    }
+
+    fn mark_unread(&mut self, channel_id: &str) {
+        if let Some(index) = self
+            .unread_channels
+            .iter()
+            .position(|unread| unread.channel_id.as_ref() == channel_id)
+        {
+            let mut unread = self.unread_channels.remove(index);
+            unread.count = unread
+                .count
+                .saturating_add(1)
+                .min(MAX_UNREAD_PER_CHANNEL);
+            self.unread_channels.push(unread);
+            return;
+        }
+
+        if self.unread_channels.len() >= MAX_UNREAD_CHANNELS {
+            self.unread_channels.remove(0);
+        }
+        self.unread_channels.push(UnreadChannel {
+            channel_id: Box::<str>::from(channel_id),
+            count: 1,
+        });
+    }
+
+    fn clear_unread(&mut self, channel_id: &str) {
+        self.unread_channels
+            .retain(|unread| unread.channel_id.as_ref() != channel_id);
+    }
+
+    fn unread_count(&self, channel_id: &str) -> u16 {
+        self.unread_channels
+            .iter()
+            .find(|unread| unread.channel_id.as_ref() == channel_id)
+            .map(|unread| unread.count)
+            .unwrap_or(0)
+    }
+
+    fn select_guild(&mut self, guild_id: Box<str>) {''',
+                  "activity methods",
+              ),
+              (
+                  "    fn select_channel(&mut self, channel_id: Box<str>, name: Box<str>) {\n        let changed = self.selected_channel.as_deref() != Some(channel_id.as_ref());\n        self.selected_channel = Some(channel_id.clone());",
+                  "    fn select_channel(&mut self, channel_id: Box<str>, name: Box<str>) {\n        let changed = self.selected_channel.as_deref() != Some(channel_id.as_ref());\n        self.clear_unread(channel_id.as_ref());\n        self.selected_channel = Some(channel_id.clone());",
+                  "selection clearing",
+              ),
+              (
+                  "                let selected = session.selected_channel.as_deref() == Some(id.as_ref());\n                if ui.selectable_label(selected, name.as_ref()).clicked() {\n                    session.select_channel(id, name);",
+                  "                let selected = session.selected_channel.as_deref() == Some(id.as_ref());\n                let label = unread_label(name.to_string(), session.unread_count(id.as_ref()));\n                if ui.selectable_label(selected, label).clicked() {\n                    session.select_channel(id, name);",
+                  "DM unread label",
+              ),
+              (
+                  '''            let label = if text_capable {
+                format!("# {}", name)
+            } else {
+                format!("· {}", name)
+            };
+            let response =''',
+                  '''            let label = if text_capable {
+                format!("# {}", name)
+            } else {
+                format!("· {}", name)
+            };
+            let label = unread_label(label, session.unread_count(id.as_ref()));
+            let response =''',
+                  "guild unread label",
+              ),
+              (
+                  "                let selected = session.selected_channel.as_deref() == Some(id.as_ref());\n                if ui.selectable_label(selected, format!(\"↳ {name}\")).clicked() {\n                    session.select_channel(id, name);",
+                  "                let selected = session.selected_channel.as_deref() == Some(id.as_ref());\n                let label = unread_label(format!(\"↳ {name}\"), session.unread_count(id.as_ref()));\n                if ui.selectable_label(selected, label).clicked() {\n                    session.select_channel(id, name);",
+                  "thread unread label",
+              ),
+              (
+                  "fn gateway_latency_label(latency: Option<Duration>) -> Option<String> {",
+                  '''fn unread_label(label: String, count: u16) -> String {
+    if count == 0 {
+        label
+    } else {
+        format!("{label}  • {count}")
+    }
+}
+
+fn gateway_latency_label(latency: Option<Duration>) -> Option<String> {''',
+                  "unread label helper",
+              ),
+          ]
+
+          for old, new, name in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one {name} anchor, found {count}")
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+          git rm .github/workflows/chapter21-gui-patch.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add bounded local unread markers"
+          git push origin HEAD:chapter-21-local-unread
