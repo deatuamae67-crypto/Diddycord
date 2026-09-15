@@ -316,8 +316,8 @@ fn show_guilds(ui: &mut egui::Ui, session: &mut DesktopSession) {
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         for (id, name, unavailable) in guilds {
-            let selected = !session.direct_mode
-                && session.selected_guild.as_deref() == Some(id.as_ref());
+            let selected =
+                !session.direct_mode && session.selected_guild.as_deref() == Some(id.as_ref());
             let text = if unavailable {
                 format!("{} (offline)", name)
             } else {
@@ -420,14 +420,14 @@ fn show_channels(ui: &mut egui::Ui, session: &mut DesktopSession) {
             } else {
                 format!("· {}", name)
             };
-            let response = ui.add_enabled(
-                text_capable,
-                egui::SelectableLabel::new(selected, label),
-            );
+            let response =
+                ui.add_enabled(text_capable, egui::SelectableLabel::new(selected, label));
             if response.clicked() {
                 session.select_channel(id, name);
             } else if !text_capable {
-                response.on_hover_text("This channel type is visible but is not a text timeline in the current GUI.");
+                response.on_hover_text(
+                    "This channel type is visible but is not a text timeline in the current GUI.",
+                );
             }
         }
 
@@ -436,10 +436,7 @@ fn show_channels(ui: &mut egui::Ui, session: &mut DesktopSession) {
             ui.label(egui::RichText::new("Active threads").strong());
             for (id, name) in threads {
                 let selected = session.selected_channel.as_deref() == Some(id.as_ref());
-                if ui
-                    .selectable_label(selected, format!("↳ {name}"))
-                    .clicked()
-                {
+                if ui.selectable_label(selected, format!("↳ {name}")).clicked() {
                     session.select_channel(id, name);
                 }
             }
