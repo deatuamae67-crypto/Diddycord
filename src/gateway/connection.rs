@@ -115,6 +115,7 @@ impl NetworkBackbone {
 
         let mut next_heartbeat = Instant::now() + heartbeat_jitter(heartbeat_interval);
         let mut awaiting_heartbeat_ack = false;
+        let mut heartbeat_sent_at: Option<Instant> = None;
         let mut stable = false;
         let mut frames_since_yield = 0u32;
 
@@ -136,7 +137,9 @@ impl NetworkBackbone {
                         });
                     }
 
+                    let sent_at = Instant::now();
                     send_heartbeat(&mut socket, session.seq).await?;
+                    heartbeat_sent_at = Some(sent_at);
                     awaiting_heartbeat_ack = true;
                     next_heartbeat = Instant::now() + heartbeat_interval;
                     continue;
@@ -300,7 +303,9 @@ impl NetworkBackbone {
                             }
                         }
                         1 => {
+                            let sent_at = Instant::now();
                             send_heartbeat(&mut socket, session.seq).await?;
+                            heartbeat_sent_at = Some(sent_at);
                             awaiting_heartbeat_ack = true;
                         }
                         7 => {
@@ -327,6 +332,9 @@ impl NetworkBackbone {
                         }
                         11 => {
                             awaiting_heartbeat_ack = false;
+                            if let Some(sent_at) = heartbeat_sent_at.take() {
+                                self.set_latency(Some(sent_at.elapsed()));
+                            }
                         }
                         _ => {}
                     }
