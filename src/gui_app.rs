@@ -325,6 +325,10 @@ fn show_connected_desktop(ctx: &egui::Context, session: &mut GuiSession) -> bool
             ui.heading("Diddycord");
             ui.separator();
             ui.label(network_status_label(session.control.status()));
+            if let Some(latency) = gateway_latency_label(session.control.latency()) {
+                ui.separator();
+                ui.label(latency);
+            }
 
             if let Some(user) = session.control.self_user() {
                 ui.separator();
@@ -359,6 +363,7 @@ fn show_connected_desktop(ctx: &egui::Context, session: &mut GuiSession) -> bool
 fn show_connected_mobile(ctx: &egui::Context, session: &mut GuiSession) -> bool {
     let mut disconnect = false;
     let status = network_status_label(session.control.status());
+    let latency = gateway_latency_label(session.control.latency());
     let self_name = session
         .control
         .self_user()
@@ -388,6 +393,10 @@ fn show_connected_mobile(ctx: &egui::Context, session: &mut GuiSession) -> bool 
 
         ui.horizontal_wrapped(|ui| {
             ui.small(status.as_str());
+            if let Some(latency) = latency.as_deref() {
+                ui.separator();
+                ui.small(latency);
+            }
             if let Some(name) = self_name.as_deref() {
                 ui.separator();
                 ui.small(format!("Signed in as {name}"));
@@ -650,6 +659,10 @@ fn show_send_button(ui: &mut egui::Ui, session: &mut GuiSession, channel_id: &st
             Err(error) => session.notice = Some(error.to_string()),
         }
     }
+}
+
+fn gateway_latency_label(latency: Option<Duration>) -> Option<String> {
+    latency.map(|latency| format!("Gateway {} ms", latency.as_millis()))
 }
 
 fn network_status_label(status: NetworkStatus) -> String {
