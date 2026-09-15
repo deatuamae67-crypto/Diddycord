@@ -105,7 +105,7 @@ impl NetworkBackbone {
                 let session_id = session
                     .session_id
                     .as_deref()
-                    .ok_or_else(|| io_error("resume URL missing for resume"))?;
+                    .ok_or_else(|| io_error("session ID missing for resume"))?;
                 let seq = session
                     .seq
                     .ok_or_else(|| io_error("sequence number missing for resume"))?;
@@ -362,35 +362,24 @@ fn emit_direct_message_discovery(
         return;
     }
 
-    let recipient = match (message.author, self_user_id) {
-        (Some(author), Some(self_id))
-            if author.id != self_id
-                && is_snowflake(author.id)
-                && !author.username.is_empty() =>
-        {
-            Some(author)
-        }
-        _ => None,
+    let Some(self_user_id) = self_user_id else {
+        return;
     };
+    let Some(author) = message.author else {
+        return;
+    };
+    if author.id == self_user_id || !is_snowflake(author.id) || author.username.is_empty() {
+        return;
+    }
 
     emit(
         frontend,
         FrontendEvent::DirectChannelUpdate(FrontendDirectChannel {
             id: Box::<str>::from(message.channel_id),
-            recipient_id: recipient
-                .as_ref()
-                .map(|author| Box::<str>::from(author.id)),
-            recipient_username: recipient
-                .as_ref()
-                .map(|author| Box::<str>::from(author.username)),
-            recipient_global_name: recipient
-                .as_ref()
-                .and_then(|author| author.global_name)
-                .map(Box::<str>::from),
-            recipient_avatar_hash: recipient
-                .as_ref()
-                .and_then(|author| author.avatar)
-                .map(Box::<str>::from),
+            recipient_id: Some(Box::<str>::from(author.id)),
+            recipient_username: Some(Box::<str>::from(author.username)),
+            recipient_global_name: author.global_name.map(Box::<str>::from),
+            recipient_avatar_hash: author.avatar.map(Box::<str>::from),
         }),
     );
 }
@@ -437,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn outbound_dm_echo_never_uses_current_bot_as_recipient() {
+    fn outbound_dm_echo_does_not_overwrite_recipient_metadata() {
         let raw: &RawValue = serde_json::from_str(
             r#"{
                 "id":"9999",
@@ -451,21 +440,11 @@ mod tests {
 
         emit_direct_message_discovery(&sender, raw, Some("100"));
 
-        let event = receiver.try_recv().unwrap();
-        match event.as_ref() {
-            FrontendEvent::DirectChannelUpdate(channel) => {
-                assert_eq!(channel.id.as_ref(), "777");
-                assert_eq!(channel.recipient_id, None);
-                assert_eq!(channel.recipient_username, None);
-                assert_eq!(channel.recipient_global_name, None);
-                assert_eq!(channel.recipient_avatar_hash, None);
-            }
-            _ => panic!("unexpected event"),
-        }
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
-    fn unknown_self_identity_keeps_dm_navigable_without_guessing_recipient() {
+    fn unknown_self_identity_does_not_guess_dm_recipient() {
         let raw: &RawValue = serde_json::from_str(
             r#"{
                 "id":"9999",
@@ -478,14 +457,7 @@ mod tests {
 
         emit_direct_message_discovery(&sender, raw, None);
 
-        let event = receiver.try_recv().unwrap();
-        match event.as_ref() {
-            FrontendEvent::DirectChannelUpdate(channel) => {
-                assert_eq!(channel.id.as_ref(), "777");
-                assert_eq!(channel.display_name(), None);
-            }
-            _ => panic!("unexpected event"),
-        }
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
