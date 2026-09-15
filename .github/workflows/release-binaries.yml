@@ -27,6 +27,8 @@ jobs:
           fetch-depth: 0
       - id: meta
         name: Read package version and verify tag
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -46,6 +48,14 @@ jobs:
             fi
             sleep 5
           done
+
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          TAG_SHA="$(git rev-list -n1 "refs/tags/$TAG")"
+          if [ "$TAG_SHA" != "$TARGET_SHA" ]; then
+            echo "Refusing release: $TAG points to $TAG_SHA, but CI verified $TARGET_SHA." >&2
+            echo "Bump Cargo.toml so every release gets a fresh immutable tag." >&2
+            exit 1
+          fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
