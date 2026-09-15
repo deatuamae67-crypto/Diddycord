@@ -45,20 +45,25 @@ jobs:
         run: cargo check --all-targets
 
   android-api23:
-    name: Android API 23 / aarch64
+    name: Android 6+ GUI APK / aarch64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install cargo-apk packager
+        run: cargo +stable install cargo-apk --version 0.10.0 --locked
       - name: Install pinned Rust toolchain and Android target
         run: |
           rustup toolchain install 1.77.2 --profile minimal
           rustup override set 1.77.2
           rustup target add aarch64-linux-android --toolchain 1.77.2
-      - name: Install Android NDK
+      - name: Install Android SDK/NDK
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
-      - name: Check Android core
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+      - name: Check Android GUI
         env:
           CC_aarch64_linux_android: ${{ github.workspace }}/.ci/android-cc
           AR_aarch64_linux_android: ${{ github.workspace }}/.ci/android-ar
@@ -71,3 +76,18 @@ jobs:
           printf '#!/bin/sh\nexec "%s/llvm-ar" "$@"\n' "$TOOLCHAIN" > .ci/android-ar
           chmod +x .ci/android-cc .ci/android-ar
           cargo check --target aarch64-linux-android --lib
+      - name: Build installable Android APK
+        run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          export ANDROID_NDK_HOME="$NDK_HOME"
+          cargo apk build --release --lib
+          test -f target/release/apk/diddycord.apk
+          sha256sum target/release/apk/diddycord.apk > target/release/apk/diddycord.apk.sha256
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: diddycord-android-api23-aarch64
+          path: |
+            target/release/apk/diddycord.apk
+            target/release/apk/diddycord.apk.sha256
+          if-no-files-found: error
