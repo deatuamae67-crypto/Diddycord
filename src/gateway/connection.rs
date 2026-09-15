@@ -1,4 +1,6 @@
 use futures_util::StreamExt;
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use tokio::time::{sleep, timeout, timeout_at, Instant};
 use tokio_tungstenite::{
     connect_async_with_config,
@@ -7,7 +9,10 @@ use tokio_tungstenite::{
 
 use super::{
     bulk::emit_message_delete_bulk,
-    direct::{emit_direct_channel_create, emit_direct_channel_delete, emit_direct_channel_update},
+    direct::{
+        emit_direct_channel_create, emit_direct_channel_delete, emit_direct_channel_update,
+        FrontendDirectChannel,
+    },
     events::{
         emit, emit_channel_create, emit_channel_delete, emit_channel_update, emit_guild_create,
         emit_guild_delete, emit_guild_update, emit_message_create, emit_message_delete,
@@ -27,6 +32,28 @@ use super::{
 };
 use crate::gateway::events::FrontendEvent;
 use crate::gateway::io_error;
+
+#[derive(Deserialize)]
+struct DirectMessageDiscovery<'a> {
+    #[serde(borrow)]
+    channel_id: &'a str,
+    #[serde(default, borrow)]
+    guild_id: Option<&'a str>,
+    #[serde(default, borrow)]
+    author: Option<DirectMessageAuthor<'a>>,
+}
+
+#[derive(Deserialize)]
+struct DirectMessageAuthor<'a> {
+    #[serde(borrow)]
+    id: &'a str,
+    #[serde(borrow)]
+    username: &'a str,
+    #[serde(default, borrow)]
+    global_name: Option<&'a str>,
+    #[serde(default, borrow)]
+    avatar: Option<&'a str>,
+}
 
 impl NetworkBackbone {
     pub(super) async fn run_connection(
@@ -237,6 +264,13 @@ impl NetworkBackbone {
                                 Some("MESSAGE_CREATE") => {
                                     if self.frontend.receiver_count() != 0 {
                                         if let Some(raw) = envelope.d {
+                                            let self_user = self.self_user.borrow();
+                                            emit_direct_message_discovery(
+                                                &self.frontend,
+                                                raw,
+                                                self_user.as_ref().map(|user| user.id.as_ref()),
+                                            );
+                                            drop(self_user);
                                             emit_message_create(&self.frontend, raw);
                                         }
                                     }
@@ -311,5 +345,134 @@ impl NetworkBackbone {
                 tokio::task::yield_now().await;
             }
         }
+    }
+}
+
+fn emit_direct_message_discovery(
+    frontend: &tokio::sync::broadcast::Sender<std::sync::Arc<FrontendEvent>>,
+    raw: &RawValue,
+    self_user_id: Option<&str>,
+) {
+    let Ok(message) = serde_json::from_str::<DirectMessageDiscovery<'_>>(raw.get()) else {
+        return;
+    };
+    if message.guild_id.is_some() || !is_snowflake(message.channel_id) {
+        return;
+    }
+
+    let Some(self_user_id) = self_user_id else {
+        return;
+    };
+    let Some(author) = message.author else {
+        return;
+    };
+    if author.id == self_user_id || !is_snowflake(author.id) || author.username.is_empty() {
+        return;
+    }
+
+    emit(
+        frontend,
+        FrontendEvent::DirectChannelUpdate(FrontendDirectChannel {
+            id: Box::<str>::from(message.channel_id),
+            recipient_id: Some(Box::<str>::from(author.id)),
+            recipient_username: Some(Box::<str>::from(author.username)),
+            recipient_global_name: author.global_name.map(Box::<str>::from),
+            recipient_avatar_hash: author.avatar.map(Box::<str>::from),
+        }),
+    );
+}
+
+fn is_snowflake(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::broadcast;
+
+    #[test]
+    fn inbound_dm_message_discovers_recipient_before_timeline_event() {
+        let raw: &RawValue = serde_json::from_str(
+            r#"{
+                "id":"9999",
+                "channel_id":"777",
+                "content":"hello",
+                "author":{"id":"42","username":"alice","global_name":"Alice","avatar":"hash"}
+            }"#,
+        )
+        .unwrap();
+        let (sender, mut receiver) = broadcast::channel(8);
+
+        emit_direct_message_discovery(&sender, raw, Some("100"));
+        emit_message_create(&sender, raw);
+
+        let discovered = receiver.try_recv().unwrap();
+        match discovered.as_ref() {
+            FrontendEvent::DirectChannelUpdate(channel) => {
+                assert_eq!(channel.id.as_ref(), "777");
+                assert_eq!(channel.recipient_id.as_deref(), Some("42"));
+                assert_eq!(channel.display_name(), Some("Alice"));
+                assert_eq!(channel.recipient_avatar_hash.as_deref(), Some("hash"));
+            }
+            _ => panic!("expected direct-channel discovery first"),
+        }
+        assert!(matches!(
+            receiver.try_recv().unwrap().as_ref(),
+            FrontendEvent::Message(_)
+        ));
+    }
+
+    #[test]
+    fn outbound_dm_echo_does_not_overwrite_recipient_metadata() {
+        let raw: &RawValue = serde_json::from_str(
+            r#"{
+                "id":"9999",
+                "channel_id":"777",
+                "content":"hello",
+                "author":{"id":"100","username":"diddy","global_name":"Diddy","avatar":"self"}
+            }"#,
+        )
+        .unwrap();
+        let (sender, mut receiver) = broadcast::channel(8);
+
+        emit_direct_message_discovery(&sender, raw, Some("100"));
+
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn unknown_self_identity_does_not_guess_dm_recipient() {
+        let raw: &RawValue = serde_json::from_str(
+            r#"{
+                "id":"9999",
+                "channel_id":"777",
+                "author":{"id":"42","username":"alice"}
+            }"#,
+        )
+        .unwrap();
+        let (sender, mut receiver) = broadcast::channel(8);
+
+        emit_direct_message_discovery(&sender, raw, None);
+
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn guild_message_is_not_direct_message_discovery() {
+        let raw: &RawValue = serde_json::from_str(
+            r#"{
+                "id":"9999",
+                "channel_id":"777",
+                "guild_id":"555",
+                "author":{"id":"42","username":"alice"}
+            }"#,
+        )
+        .unwrap();
+        let (sender, mut receiver) = broadcast::channel(8);
+
+        emit_direct_message_discovery(&sender, raw, Some("100"));
+
+        assert!(receiver.try_recv().is_err());
     }
 }
