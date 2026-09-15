@@ -137,8 +137,35 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "ndk;27.2.12479018"
+      - name: Prepare Android signing key
+        id: android-signing
+        shell: bash
+        env:
+          RELEASE_KEYSTORE_B64: ${{ secrets.DIDDYCORD_ANDROID_KEYSTORE_B64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.DIDDYCORD_ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/diddycord-release.keystore"
+          if [ -n "${RELEASE_KEYSTORE_B64:-}" ] && [ -n "${RELEASE_KEYSTORE_PASSWORD:-}" ]; then
+            printf '%s' "$RELEASE_KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
+            echo "ephemeral=false" >> "$GITHUB_OUTPUT"
+          else
+            keytool -genkeypair \
+              -keystore "$KEYSTORE" \
+              -storepass android \
+              -keypass android \
+              -alias diddycord-ci \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Diddycord CI,O=Diddycord,C=PT"
+            echo "ephemeral=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build optimized Android APK
         shell: bash
+        env:
+          CARGO_APK_RELEASE_KEYSTORE: ${{ runner.temp }}/diddycord-release.keystore
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.DIDDYCORD_ANDROID_KEYSTORE_PASSWORD || 'android' }}
         run: |
           set -euo pipefail
           export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
@@ -148,12 +175,21 @@ jobs:
           APK="diddycord-${TAG}-android-api23-aarch64.apk"
           cp target/release/apk/diddycord.apk "$APK"
           sha256sum "$APK" > "$APK.sha256"
+      - name: Record Android signing mode
+        shell: bash
+        run: |
+          if [ "${{ steps.android-signing.outputs.ephemeral }}" = "true" ]; then
+            printf '%s\n' 'This APK uses an ephemeral CI signing certificate. Installable for testing, but a later APK signed with a different key will require uninstalling the old build first.' > android-signing.txt
+          else
+            printf '%s\n' 'This APK uses the repository-configured persistent Android release signing certificate.' > android-signing.txt
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: diddycord-android-api23-aarch64
           path: |
             diddycord-${{ env.TAG }}-android-api23-aarch64.apk
             diddycord-${{ env.TAG }}-android-api23-aarch64.apk.sha256
+            android-signing.txt
           if-no-files-found: error
 
   publish:
@@ -179,6 +215,6 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "Diddycord $TAG" \
-              --notes "Diddycord $TAG graphical release.\n\nDownloads:\n- Windows x86_64: graphical Diddycord app (ZIP containing diddycord.exe)\n- Linux x86_64: graphical Diddycord app (tar.gz containing diddycord)\n- Android 6+/API 23 aarch64: installable graphical APK\n\nAll graphical builds share the same bounded Gateway/REST core and accept bot/application tokens only; user-token/self-bot authentication remains intentionally unsupported. SHA-256 checksum files are included for every download."
+              --notes "Diddycord $TAG graphical release.\n\nDownloads:\n- Windows x86_64: graphical Diddycord app (ZIP containing diddycord.exe)\n- Linux x86_64: graphical Diddycord app (tar.gz containing diddycord)\n- Android 6+/API 23 aarch64: installable graphical APK\n\nAll graphical builds share the same bounded Gateway/REST core and accept bot/application tokens only; user-token/self-bot authentication remains intentionally unsupported. SHA-256 checksum files are included. Android release builds use a persistent signing certificate when DIDDYCORD_ANDROID_KEYSTORE_B64 and DIDDYCORD_ANDROID_KEYSTORE_PASSWORD repository secrets are configured; otherwise the release records that it used an ephemeral CI certificate."
           fi
           gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
