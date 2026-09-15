@@ -114,7 +114,7 @@ jobs:
           if-no-files-found: error
 
   android-aarch64:
-    name: Android API 23 aarch64 native release
+    name: Android 6+ GUI APK / aarch64
     needs: metadata
     runs-on: ubuntu-latest
     env:
@@ -123,44 +123,37 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.metadata.outputs.tag }}
+      - name: Install cargo-apk packager
+        run: cargo +stable install cargo-apk --version 0.10.0 --locked
       - name: Install pinned Rust toolchain and Android target
         run: |
           rustup toolchain install 1.77.2 --profile minimal
           rustup override set 1.77.2
           rustup target add aarch64-linux-android --toolchain 1.77.2
-      - name: Install Android NDK
+      - name: Install Android SDK/NDK
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
-      - name: Configure Android linker
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018"
+      - name: Build optimized Android APK
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .ci
-          NDK="$ANDROID_HOME/ndk/27.2.12479018"
-          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          printf '#!/bin/sh\nexec "%s/aarch64-linux-android23-clang" "$@"\n' "$TOOLCHAIN" > .ci/android-cc
-          printf '#!/bin/sh\nexec "%s/llvm-ar" "$@"\n' "$TOOLCHAIN" > .ci/android-ar
-          chmod +x .ci/android-cc .ci/android-ar
-      - name: Build optimized Android native executable
-        env:
-          CC_aarch64_linux_android: ${{ github.workspace }}/.ci/android-cc
-          AR_aarch64_linux_android: ${{ github.workspace }}/.ci/android-ar
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ github.workspace }}/.ci/android-cc
-        run: cargo build --release --target aarch64-linux-android --bin diddycord
-      - name: Package executable and checksum
-        shell: bash
-        run: |
-          set -euo pipefail
-          ARCHIVE="diddycord-${TAG}-android-api23-aarch64.tar.gz"
-          tar -czf "$ARCHIVE" -C target/aarch64-linux-android/release diddycord
-          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          export ANDROID_NDK_HOME="$NDK_HOME"
+          cargo apk build --release --lib
+          test -f target/release/apk/diddycord.apk
+          APK="diddycord-${TAG}-android-api23-aarch64.apk"
+          cp target/release/apk/diddycord.apk "$APK"
+          sha256sum "$APK" > "$APK.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: diddycord-android-api23-aarch64
           path: |
-            diddycord-${{ env.TAG }}-android-api23-aarch64.tar.gz
-            diddycord-${{ env.TAG }}-android-api23-aarch64.tar.gz.sha256
+            diddycord-${{ env.TAG }}-android-api23-aarch64.apk
+            diddycord-${{ env.TAG }}-android-api23-aarch64.apk.sha256
           if-no-files-found: error
 
   publish:
@@ -186,6 +179,6 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "Diddycord $TAG" \
-              --notes "Diddycord $TAG compiled release.\n\nDownloads:\n- Windows x86_64: graphical Diddycord app (ZIP containing diddycord.exe)\n- Linux x86_64: graphical Diddycord app (tar.gz containing diddycord)\n- Android 6+/API 23 aarch64: native headless executable for the shared core (not yet an APK)\n\nThe Windows and Linux builds open the native Diddycord graphical interface and accept bot/application tokens only. The Android graphical APK is a later milestone. SHA-256 checksum files are included for every archive."
+              --notes "Diddycord $TAG graphical release.\n\nDownloads:\n- Windows x86_64: graphical Diddycord app (ZIP containing diddycord.exe)\n- Linux x86_64: graphical Diddycord app (tar.gz containing diddycord)\n- Android 6+/API 23 aarch64: installable graphical APK\n\nAll graphical builds share the same bounded Gateway/REST core and accept bot/application tokens only; user-token/self-bot authentication remains intentionally unsupported. SHA-256 checksum files are included for every download."
           fi
           gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
