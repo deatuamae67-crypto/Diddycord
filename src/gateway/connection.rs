@@ -268,9 +268,7 @@ impl NetworkBackbone {
                                             emit_direct_message_discovery(
                                                 &self.frontend,
                                                 raw,
-                                                self_user
-                                                    .as_ref()
-                                                    .map(|user| user.id.as_ref()),
+                                                self_user.as_ref().map(|user| user.id.as_ref()),
                                             );
                                             drop(self_user);
                                             emit_message_create(&self.frontend, raw);
