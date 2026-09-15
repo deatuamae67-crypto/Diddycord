@@ -1,0 +1,82 @@
+name: Chapter 20 one-shot GUI patch
+
+on:
+  push:
+    branches: [chapter-20-gui-gateway-latency]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapter-20-gui-gateway-latency
+      - name: Add Gateway latency to graphical status bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/gui_app.rs')
+          text = path.read_text()
+
+          desktop_old = '''            ui.label(network_status_label(session.control.status()));
+
+            if let Some(user) = session.control.self_user() {'''
+          desktop_new = '''            ui.label(network_status_label(session.control.status()));
+            if let Some(latency) = gateway_latency_label(session.control.latency()) {
+                ui.separator();
+                ui.label(latency);
+            }
+
+            if let Some(user) = session.control.self_user() {'''
+
+          mobile_old = '''    let status = network_status_label(session.control.status());
+    let self_name = session
+        .control'''
+          mobile_new = '''    let status = network_status_label(session.control.status());
+    let latency = gateway_latency_label(session.control.latency());
+    let self_name = session
+        .control'''
+
+          mobile_row_old = '''            ui.small(status.as_str());
+            if let Some(name) = self_name.as_deref() {'''
+          mobile_row_new = '''            ui.small(status.as_str());
+            if let Some(latency) = latency.as_deref() {
+                ui.separator();
+                ui.small(latency);
+            }
+            if let Some(name) = self_name.as_deref() {'''
+
+          helper_anchor = '''fn network_status_label(status: NetworkStatus) -> String {'''
+          helper = '''fn gateway_latency_label(latency: Option<Duration>) -> Option<String> {
+    latency.map(|latency| format!("Gateway {} ms", latency.as_millis()))
+}
+
+fn network_status_label(status: NetworkStatus) -> String {'''
+
+          replacements = [
+              (desktop_old, desktop_new, 'desktop status bar'),
+              (mobile_old, mobile_new, 'mobile latency snapshot'),
+              (mobile_row_old, mobile_row_new, 'mobile status row'),
+              (helper_anchor, helper, 'latency label helper'),
+          ]
+          for old, new, name in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected exactly one {name} anchor, found {text.count(old)}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+          git rm .github/workflows/chapter20-gui-patch.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/gui_app.rs .github/workflows/chapter20-gui-patch.yml
+          git commit -m "feat: show Gateway latency in graphical status bars"
+          git push origin HEAD:chapter-20-gui-gateway-latency
