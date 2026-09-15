@@ -56,6 +56,7 @@ pub struct NetworkControl {
     shutdown: watch::Sender<bool>,
     status: watch::Receiver<NetworkStatus>,
     self_user: watch::Receiver<Option<Arc<CurrentUser>>>,
+    latency: watch::Receiver<Option<Duration>>,
 }
 
 impl NetworkControl {
@@ -77,6 +78,14 @@ impl NetworkControl {
 
     pub fn subscribe_self_user(&self) -> watch::Receiver<Option<Arc<CurrentUser>>> {
         self.self_user.clone()
+    }
+
+    pub fn latency(&self) -> Option<Duration> {
+        *self.latency.borrow()
+    }
+
+    pub fn subscribe_latency(&self) -> watch::Receiver<Option<Duration>> {
+        self.latency.clone()
     }
 }
 
@@ -104,6 +113,7 @@ pub struct NetworkBackbone {
     shutdown: watch::Sender<bool>,
     status: watch::Sender<NetworkStatus>,
     self_user: watch::Sender<Option<Arc<CurrentUser>>>,
+    latency: watch::Sender<Option<Duration>>,
 }
 
 impl NetworkBackbone {
@@ -112,12 +122,14 @@ impl NetworkBackbone {
         let (shutdown, _) = watch::channel(false);
         let (status, _) = watch::channel(NetworkStatus::Idle);
         let (self_user, _) = watch::channel::<Option<Arc<CurrentUser>>>(None);
+        let (latency, _) = watch::channel::<Option<Duration>>(None);
         Self {
             config,
             frontend,
             shutdown,
             status,
             self_user,
+            latency,
         }
     }
 
@@ -130,6 +142,7 @@ impl NetworkBackbone {
             shutdown: self.shutdown.clone(),
             status: self.status.subscribe(),
             self_user: self.self_user.subscribe(),
+            latency: self.latency.subscribe(),
         }
     }
 
@@ -141,9 +154,14 @@ impl NetworkBackbone {
         self.self_user.subscribe()
     }
 
+    pub fn subscribe_latency(&self) -> watch::Receiver<Option<Duration>> {
+        self.latency.subscribe()
+    }
+
     pub async fn run(self) -> Result<(), BoxError> {
         let mut shutdown = self.shutdown.subscribe();
         if *shutdown.borrow() {
+            self.set_latency(None);
             self.set_status(NetworkStatus::Stopped);
             return Ok(());
         }
@@ -154,16 +172,19 @@ impl NetworkBackbone {
 
         loop {
             let resume = next_auth == AuthMode::Resume && session.can_resume();
+            self.set_latency(None);
             self.set_status(NetworkStatus::Connecting { resume });
 
             let result = tokio::select! {
                 biased;
                 _ = shutdown.changed() => {
+                    self.set_latency(None);
                     self.set_status(NetworkStatus::Stopped);
                     return Ok(());
                 }
                 result = self.run_connection(&mut session, next_auth) => result,
             };
+            self.set_latency(None);
 
             let (next, stable) = match result {
                 Ok(exit) => (exit.next, exit.stable),
@@ -210,6 +231,7 @@ impl NetworkBackbone {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => {
+                    self.set_latency(None);
                     self.set_status(NetworkStatus::Stopped);
                     return Ok(());
                 }
@@ -224,6 +246,10 @@ impl NetworkBackbone {
 
     pub(super) fn set_self_user(&self, user: CurrentUser) {
         self.self_user.send_replace(Some(Arc::new(user)));
+    }
+
+    pub(super) fn set_latency(&self, latency: Option<Duration>) {
+        self.latency.send_replace(latency);
     }
 }
 
@@ -245,6 +271,8 @@ mod tests {
         assert_eq!(cloned.status(), NetworkStatus::Idle);
         assert!(control.self_user().is_none());
         assert!(cloned.self_user().is_none());
+        assert_eq!(control.latency(), None);
+        assert_eq!(cloned.latency(), None);
     }
 
     #[test]
@@ -267,6 +295,19 @@ mod tests {
     }
 
     #[test]
+    fn latency_updates_are_visible_through_existing_controls() {
+        let backbone = NetworkBackbone::new(GatewayConfig::new("test-token", DEFAULT_INTENTS), 8);
+        let control = backbone.control();
+        let expected = Duration::from_millis(37);
+
+        backbone.set_latency(Some(expected));
+        assert_eq!(control.latency(), Some(expected));
+
+        backbone.set_latency(None);
+        assert_eq!(control.latency(), None);
+    }
+
+    #[test]
     fn shutdown_before_run_avoids_network_io() {
         let backbone = NetworkBackbone::new(GatewayConfig::new("test-token", DEFAULT_INTENTS), 8);
         let control = backbone.control();
@@ -278,5 +319,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(control.status(), NetworkStatus::Stopped);
+        assert_eq!(control.latency(), None);
     }
 }
