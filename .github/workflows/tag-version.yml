@@ -37,8 +37,15 @@ jobs:
           tag="v${version}"
           git fetch --tags --force
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-            echo "${tag} already exists; leaving it unchanged."
-            exit 0
+            existing_sha="$(git rev-list -n1 "refs/tags/${tag}")"
+            if [ "$existing_sha" = "$TARGET_SHA" ]; then
+              echo "${tag} already exists at verified commit ${TARGET_SHA}."
+              exit 0
+            fi
+
+            echo "Refusing to reuse ${tag}: it points to ${existing_sha}, not verified commit ${TARGET_SHA}." >&2
+            echo "Bump Cargo.toml before publishing another release." >&2
+            exit 1
           fi
 
           git config user.name "github-actions[bot]"
